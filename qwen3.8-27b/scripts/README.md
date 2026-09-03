@@ -57,6 +57,8 @@ bash up.sh stop                # 停止（S9 清场 + KFD 校验）
 
 ## 三、配置总表
 
+> 公开仓仅收录六条精选线（01/02/09/10/11/12）；其余编号为内部研究/对照线，不随仓发布。
+
 | 包 | 线 | 卡 | 引擎 | 端口 | 上下文 | 一句话定位与代表数据 |
 |---|---|---|---|---|---|---|
 | **09** | A | 4 | sglang(INT8) | 8109 | 262K/1M | 低延迟（后备）：单流 d86 p2300，8路 148 |
@@ -65,12 +67,6 @@ bash up.sh stop                # 停止（S9 清场 + KFD 校验）
 | **10** ★ | A | 4 | sglang(INT8) | 8110 | 262K | **高QPS主力**：8路 243，p3990 |
 | **01** ★ | A | 4 | sglang(bf16) | 8101 | **1M** | bf16 全能保守线：d19-25，prefill 侧最强 |
 | **02** ★ | A | 8 | sglang×2+网关 | 8100 | 1M×2 | 双副本粘性网关：≈01×2，conc8 碾压 TP8 |
-| 03 | A | 8 | sglang | 8100 | 1M | TP8 混合传输，仅单用户长输出 |
-| 04 | A | 4 | sglang | 8100 | 1M | 基线对照 / 最简回退 |
-| 05 | C | 4 | vLLM | 8100 | 512K | C 线生产（短输入强，长输入崩塌）|
-| 06 | C | 4 | vLLM | 8100 | 可传 | 05 的参数化副本构件（DP 拼装用）|
-| 07 | C | 8 | vLLM | 8108 | — | C 线 TP8 混合传输 |
-| 08 | C | 8 | vLLM | 8108 | — | 07 的 Tree 取舍版（prefill 快/并发慢）|
 
 （d=decode tok/s，p=prefill tok/s；09/10 目录名内嵌单流与聚合实测值，看名即选型）
 
@@ -164,51 +160,6 @@ page64、NEXTN **steps3/topk1/draft4（锁死，铁律）**、`--disable-custom-
 
 **实测**：conc8 对 TP8 prefill **2.91×** / decode **2.55×**；会话粘性 3/3（含零配置前缀粘性）；
 循环画像与 01 直连逐项同值（**网关开销≈0，粘性不破坏前缀缓存**）：@220K ~19s、@350K 23.7s。
-
-### 03 · bf16 TP8 混合传输
-
-**参数**：同 01 树；TP8 全 8 卡；`NCCL_P2P_LEVEL=PXB + NCCL_ALGO=Ring`（同 socket 走 VRAM P2P、
-跨 socket 走 SHM）+ `dlhook2-sg.so`（按 socket 过滤 agent）；NEXTN 同锁定值；ctx 1M。
-
-**实测**：定位=单用户长输出独占 8 卡的例外场景；并发 ≥4 时被 02 碾压（见 02 数据）。
-混合传输依据见 `docs/复盘三-52ms活锁根因与TP8混合传输.md`。
-
-### 04 · bf16 TP4 基线对照
-
-**参数**：01 的朴素版（无调优 flag）：TP4、ctx 1M、NEXTN 锁定值、`NCCL_P2P_LEVEL=PHB`、mem 0.90。
-
-**实测**：作为 A/B 的对照基线与最简回退；无独立性能榜（对照用途）。
-
-### 05 · C 线 vLLM TP4（GDN all 模式）
-
-**参数**：镜像 `…custom:vllm-ubuntu22.04-dtk26.04-hy3-0706`（vLLM 0.21）；卡4-7；
-YaRN factor 2.0（512K）、MTP 投机 num=3、PIECEWISE cudagraph、GDN all 模式、
-mamba-block 8192、custom AR **启用**（故 serve 前强制 ACS 体检——没清干净会以 0.05 tok/s
-静默起来）；挂包内 8 个 vLLM 补丁 .py（GDN 缓存/统一注意力）。
-
-**实测**：C 线生产位：短输入强、长输入崩塌；512K 上限（缺 1M）。历史数据见线内 NOTES。
-
-### 06 · C 线参数化副本构件
-
-**参数**：05 的可参数化版（GPUS/PORT/NAME/MAXLEN/YARN_FACTOR/MAMBA_ALL 全可传）；
-1M 需 `YARN_FACTOR=4.0 MAMBA_ALL=0`（TP4 上 1M 与 all 模式缓存显存互斥）。
-
-**实测**：构件性质，用于拼 C 线 DP2；性能同 05 参数化外推。
-
-### 07 · C 线 vLLM TP8 混合传输
-
-**参数**：05 同树；TP8；`NCCL_P2P_LEVEL=PXB + ALGO=Ring` + `dlhook2.so`；
-`--disable-custom-all-reduce` 必须（自研 AR 跨 8 rank IPC 绕不过活锁）；MTP 投机。
-
-**实测**：集合带宽修复的受益者（见 08）；整机单实例场景。
-
-### 08 · 07 的 Tree 取舍版
-
-**参数**：07 基础上的 Tree 注意力取舍（prefill 快 / 并发慢）。
-
-**实测**：集合带宽 1.5 → **5.7 GB/s（3.75×）**，正确性 27/27。取舍依据见线内 README。
-
----
 
 ## 六、十步契约（方法论骨架）
 
