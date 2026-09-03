@@ -1,0 +1,13 @@
+default_stage:
+  default_modifiers:
+    GPTQModifier:
+      targets: [Linear]
+      ignore: [lm_head, 're:.*embed_tokens', 're:.*linear_attn[.]in_proj_a$', 're:.*linear_attn[.]in_proj_b$',
+        're:.*visual.*', 're:.*mtp.*']
+      scheme: W8A8
+      bypass_divisibility_checks: false
+      requires_calibration_data: true
+      block_size: 128
+      dampening_frac: 0.01
+      actorder: static
+      offload_hessians: false
