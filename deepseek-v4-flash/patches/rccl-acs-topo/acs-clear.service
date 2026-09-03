@@ -1,0 +1,24 @@
+[Unit]
+Description=Machine-level prep for LLM serving: kernel params + PCIe ACS (see docs/方案脚本规范-设计文档.md S1)
+Documentation=https://github.com/nightthink/Hygon-K100-AI-Qwen3.8-27B
+# hycu 驱动加载时会把所有桥的 ACS 重新打开（ACSCtl=0x1D），所以本服务
+# 必须跑在 hycu 之后。脚本内部以「hycu 已绑定 8 张卡」为闸自行等待，
+# 不依赖 systemd 能否为 hycu 排出顺序（它多由 udev 异步加载）。
+After=sysinit.target systemd-modules-load.service systemd-udev-settle.service
+# 容器起来前必须清完，否则推理服务会以被 IOMMU 重定向的 P2P 启动且不报错
+Before=docker.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/machine_prep.sh
+# 等 GPU 最多 5 分钟；实测 验证机B 上 hycu 在开机后 3 分 17 秒才加载
+TimeoutStartSec=420
+StandardOutput=journal
+StandardError=journal
+# 失败不阻塞开机（最坏情况退回 SHM 路径，服务仍可用，只是慢）
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target
