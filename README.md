@@ -1,5 +1,7 @@
 # K100AI 模型部署实践
 
+[MIT License](LICENSE)
+
 海光 **K100-AI（gfx928，8×64GB）** 上大模型部署的**成功配置线**发布仓。
 只收录实机验收通过的**完整拉起包**（自包含、可观察、幂等、可完整撤场），
 且只发布有独立优点的精选线；调优过程与研究性中间版本不在本仓。定期更新。
@@ -71,3 +73,12 @@ harbor.sourcefind.cn:5443 与 hf-mirror.com/ModelScope（不可达走各线 READ
 - 只发布通过「解包 → up → S1-S8 → 真实请求 → 完整停止」验收、且有独立优点的配置线
 - 每线 README 写明镜像 URL、权重来源、参数小结、实测数据与硬边界
 - 版本以 git tag + Releases（含预打好的 kit tar.gz）发布
+
+## 许可证
+
+本仓库由 DaoTechAi Team 编写的全部内容以 **[MIT License](LICENSE)** 发布——
+可自由使用、修改、再分发（含商用），仅需保留版权与许可声明；按"现状"提供，不附任何担保。
+
+第三方组件各依其原许可证（DocPang、z-lab/dflash 为 MIT；SGLang、vLLM 为 Apache-2.0；
+海光/曙光的镜像与闭源组件、各模型权重版权归其所有，本仓库不做再分发），
+明细见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
