@@ -37,6 +37,8 @@ PORT="${PORT:-$(meta port | head -1)}"
 GPUS="${GPUS:-$(meta gpus | head -1)}"
 EXPECT_GPU="$(meta expect-gpu | head -1)"; EXPECT_GPU="${EXPECT_GPU:-8}"
 export MODELS_ROOT="${MODELS_ROOT:-/data/models}"
+# SKIP_FETCH 为 SKIP_S2 的通用兼容别名（语义：跳过自举获取）；SKIP_S2 仍是规范变量
+[ "${SKIP_FETCH:-0}" = 1 ] && SKIP_S2=1
 # ── S2 · 宿主环境自举：镜像/权重/1M 农场，缺则补、有则跳过（SKIP_S2=1 跳过）──
 if [ "${SKIP_S2:-0}" != 1 ]; then
   bash "$COMMON/ensure_ready.sh" "$SERVE" || { echo "S2 未通过，拒绝启动（SKIP_S2=1 可跳过自举）"; exit 1; }

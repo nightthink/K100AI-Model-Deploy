@@ -16,7 +16,12 @@ S="$HERE/scripts"; P="$HERE/patches"
 SEL="${1:?用法: build_package.sh <NN|all> [输出目录]}"
 OUT="${2:-$PWD}"
 TS="$(date +%Y%m%d)"
-GIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo n/a)"
+# 溯源与确定性（发布器在净化副本里构建时无 .git，由环境显式传入）
+SOURCE_REPO="${SOURCE_REPO:-$(basename "$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null || echo n/a)")}"
+SOURCE_COMMIT="${SOURCE_COMMIT:-$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo n/a)}"
+SOURCE_EPOCH="${SOURCE_EPOCH:-$(git -C "$HERE" log -1 --format=%ct 2>/dev/null || echo 0)}"
+# 版本 = <YYYYMMDD>-g<Git短哈希>（同日多构建可区分；commit 未知时退化为纯日期）
+if [ "$SOURCE_COMMIT" != n/a ]; then VER="$TS-g${SOURCE_COMMIT:0:7}"; else VER="$TS"; fi
 
 COMMON_CORE="launch.sh ensure_ready.sh fetch_hf_model.sh machine_prep.sh numa_bind.sh preflight_acs.sh"
 
@@ -32,7 +37,7 @@ build_one(){
   # 骨架
   install -m0755 "$S/up.sh" "$ROOT/up.sh"
   echo "$CFG" > "$ROOT/.primary"
-  echo "q38-kit-$NN $TS (git $GIT)" > "$ROOT/VERSION"
+  echo "q38-kit-$NN $VER" > "$ROOT/VERSION"
   for f in $COMMON_CORE; do cp "$S/common/$f" "$ROOT/common/"; done
   cp -r "$S/lib/." "$ROOT/lib/"
   cp "$P/rccl-acs-topo/acs_clear_all.sh" "$P/rccl-acs-topo/acs-clear.service" "$ROOT/patches/"
@@ -78,8 +83,86 @@ bash up.sh stop         # 停止（S9 清场）
 十步契约方法论见 \`docs/方案脚本规范-设计文档.md\`。升级：新包覆盖解包（勿 rm -rf，保留 triton 缓存目录）。
 EOF
 
-  local PKG="$OUT/q38-kit-$NN-$TS.tar.gz"
-  tar -C "$TMP" -czf "$PKG" "q38-kit-$NN"
+  # ── 通用机器可读清单 MANIFEST.json（消费方中立；自身不入 files；除自身外全量列举）──
+  ROOT="$ROOT" NN="$NN" CFG="$CFG" VER="$VER" \
+  SOURCE_REPO="$SOURCE_REPO" SOURCE_COMMIT="$SOURCE_COMMIT" \
+  python3 - <<'PYEOF'
+import hashlib, json, os, re, sys
+from pathlib import Path
+
+root = Path(os.environ["ROOT"])
+nn, cfg, ver = os.environ["NN"], os.environ["CFG"], os.environ["VER"]
+serve_path = root / cfg / "serve.sh"
+# 多容器编排线（如 02）无单一 serve.sh：入口为该配置目录内 up.sh，引擎/模型字段降级为 null
+serve = serve_path.read_text(encoding="utf-8", errors="replace") if serve_path.exists() else ""
+
+def meta(tag):
+    out = []
+    for line in serve.splitlines():
+        m = re.match(rf"#\s*@{tag}[ \t]+(.*)", line)
+        if m:
+            out.append(m.group(1).strip())
+    return out
+
+def resolve_num(token):
+    """serve.sh 里的字面数字，或 VAR="${VAR:-默认}" 形式的默认值。"""
+    if re.fullmatch(r"\d+", token):
+        return int(token)
+    m = re.fullmatch(r"\$\{?([A-Z_][A-Z0-9_]*)[:}-].*", token) or re.fullmatch(r"\$([A-Z_][A-Z0-9_]*)", token)
+    if m:
+        var = m.group(1)
+        d = re.search(rf'{var}="\$\{{{var}:-(\d+)\}}"', serve)
+        if d:
+            return int(d.group(1))
+    return None
+
+engine = "sglang" if re.search(r"launch_server|sglang", serve) else ("vllm" if re.search(r"vllm", serve) else "unknown")
+sm = re.search(r"--served-model-name[= ]+(\S+)", serve) or re.search(r"SERVED_MODEL_NAME=([A-Za-z0-9_.-]+)", serve)
+served_model = sm.group(1).strip('"') if sm else None
+cl = re.search(r"--context-length[= ]+(\S+)", serve) or re.search(r'\bCTX="\$\{CTX:-(\d+)\}"', serve)
+context_length = resolve_num(cl.group(1).strip('"')) if cl else None
+
+files = []
+for p in sorted(x for x in root.rglob("*") if x.is_file()):
+    rel = p.relative_to(root).as_posix()
+    if rel == "MANIFEST.json":
+        continue
+    files.append({"path": rel, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()})
+
+manifest = {
+    "schema_version": 1,
+    "kit": {"id": f"q38-kit-{nn}", "line": nn, "version": ver},
+    "source": {"repo": os.environ["SOURCE_REPO"], "commit": os.environ["SOURCE_COMMIT"]},
+    "engine": engine,
+    "entrypoints": {
+        "orchestrated": "up.sh",
+        "direct": ("common/launch.sh <config_dir> [KEY=VAL ...]" if serve else None),
+    },
+    "config_dir": cfg,
+    "parameters": {
+        "GPUS": "可见加速卡列表（逗号分隔，如 0,1,2,3）",
+        "PORT": "服务监听端口",
+        "NAME": "容器实例名",
+    },
+    "env_switches": {
+        "SKIP_S2": "跳过镜像/权重自举获取（规范变量；离线现场必设 1）",
+        "SKIP_FETCH": "SKIP_S2 的兼容别名",
+        "MODELS_ROOT": "模型权重根目录（默认 /data/models）",
+    },
+    "requires": meta("requires"),
+    "served_model": served_model,
+    "context_length": context_length,
+    "files": files,
+}
+(root / "MANIFEST.json").write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PYEOF
+
+  local PKG="$OUT/q38-kit-$NN-$VER.tar.gz"
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$SOURCE_EPOCH" \
+      -C "$TMP" -c "q38-kit-$NN" | gzip -n > "$PKG"
   printf "✓ %-28s %6s  %3d 文件\n" "$(basename "$PKG")" "$(du -h "$PKG" | cut -f1)" "$(find "$ROOT" -type f | wc -l)"
   rm -rf "$TMP"; trap - RETURN
 }
