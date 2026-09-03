@@ -41,3 +41,12 @@ graphs 1-8（09=1-4/8）、mamba 32（09=16）、max-total-tokens 1M、mamba-tra
   本线以 `SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=0` 降为告警（DocPang v1.3.1
   rootfix 是根修，待兼容性验证后可换根修）
 - 120K 暖轮 decode 存在 53-77 波动（accept 内容依赖 + 实例态），冷轮 23-32
+
+## 能力四项验证（2026-09-03 实测）
+
+| 项 | 结果 |
+|---|---|
+| 1M 上下文 | 配置 1048576；350K 循环全通；1M 单发同树验证（09 线，99.7万 tok） |
+| Think | 默认思考先行；`chat_template_kwargs.enable_thinking=false` 可关（实测） |
+| Tool call | `tool_choice=auto` 实测通过（选函数/参数/finish_reason 全对）；`required` 未声明支持 |
+| 温度采样 | temp/top_p/默认采样全通（v122）；`sampling_seed` 精确复现未声明支持 |
