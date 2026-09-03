@@ -47,6 +47,25 @@ bash up.sh stop     # 完整撤场（按标记前缀精确识别本包资产）
 硬性前提只有两个：DCU 驱动已装载（/dev/kfd、/opt/hyhal）；网络可达
 harbor.sourcefind.cn:5443 与 hf-mirror.com/ModelScope（不可达走各线 README 的离线兜底）。
 
+## 致谢
+
+本仓库的成果站在以下项目与团队的肩膀上，特此明确致谢：
+
+- **[DocPang/qwen38-k100ai-int8-optimization](https://github.com/DocPang/qwen38-k100ai-int8-optimization)**（MIT）——
+  K100-AI 上 Qwen3.8-27B 优化的社区先行者。本仓库的 raw-q8 verifier 思路（其 v1.2.1 的
+  layout ABI 审计）、非贪婪采样修复（其 v1.2.2 三文件）、chat 模板均源自该项目；
+  12 号线直接运行其 v1.3.1 成品镜像。其 custom-AR/参数体系的公开数据是我们 11 号线的直接参照。
+- **[z-lab/dflash](https://github.com/z-lab/dflash)**（MIT）—— DFlash2 块扩散草稿模型与算法，
+  Qwen3.8-27B 各投机线的加速根基。
+- **[sgl-project/sglang](https://github.com/sgl-project/sglang)**（Apache-2.0）与
+  **[vllm-project/vllm](https://github.com/vllm-project/vllm)**（Apache-2.0）—— 推理引擎上游。
+- **海光/曙光（SourceFind）** —— DTK、K100-AI 适配镜像与 gfx928 官方修复件
+  （含 paged-varlen 修复、INT8 GEMM 调优表）；ModelScope `hygon` 官方 Channel-INT8 权重。
+- **Freaksterz** —— Qwen3.8-27B SmoothQuant W8A8 量化实现全套开源（我们 INT8 量化配方的参考源）。
+- **DeepSeek 与 Qwen 模型团队** —— 模型本体。
+
+各项目的许可证细节见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 发布纪律
 
 - 只发布通过「解包 → up → S1-S8 → 真实请求 → 完整停止」验收、且有独立优点的配置线
