@@ -66,5 +66,5 @@ NEXTN steps2/draft3（draft4 在本树深上下文塌方）。**不再需要 dlh
 | 120K decode 冷/暖 | 深段 ~15-16 | **26.5 / 29.5** |
 
 边界：1M 农场需同时挂 $MODELS_ROOT 根（符号链接）；overrides/ 两个 preprocessor json
-与 hygon 目录 tokenizer 两件为 0828 树必需；⚠ **02 号线内嵌本配置，升级后 02 未重新验收**。
+与 hygon 目录 tokenizer 两件为 0828 树必需；02 号线内嵌本配置：已用 v2 内嵌重新验收通过（2026-09-03）。
 旧版脚本保留为 serve.v1-0811tree.sh.bak。

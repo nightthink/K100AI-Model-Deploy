@@ -19,7 +19,7 @@ TPOT **63.40→48.2 ms（1.31×）**；64k 上两者基本持平。**赢在长�
 # @port  8101
 # @gpus  0,1,2,3
 # @expect-gpu 8
-# @requires /data/models/Qwen3.8-27B-1M /data/q38-work/dlhook2-sg.so
+# @requires /data/models/Qwen3.8-27B-1M   （v2 起不再需要 dlhook2-sg；以下为 v1/0811 树时期的历史笔记）
 # @attest 上下文长度:context_length
 # @attest 投机解码NEXTN:speculative
 ```

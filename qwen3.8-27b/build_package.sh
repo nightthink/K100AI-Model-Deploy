@@ -41,14 +41,15 @@ build_one(){
 
   # 按线附件
   case "$NN" in
-    01|03)
+    01)
+      cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm";;   # v2：0828树+AR，不再需要 dlhook2-sg
+    03)
       cp "$P/hip-agent-filter/prebuilt/dlhook2.so" "$ROOT/dlhook2-sg.so"
       cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm";;
     04)
       cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm";;
     02)
       cp -r "$S/01-A-sglang-tp4" "$ROOT/01-A-sglang-tp4"
-      cp "$P/hip-agent-filter/prebuilt/dlhook2.so" "$ROOT/dlhook2-sg.so"
       cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm"
       cp "$S/common/router.py" "$S/common/serve_router.sh" "$ROOT/common/";;
     05|06)
