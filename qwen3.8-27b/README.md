@@ -29,13 +29,15 @@ deploy-kit/
 ├── build_package.sh        ★ 打包器：`bash build_package.sh <NN|all>` → q38-kit-<NN>-<日期>.tar.gz
 ├── scripts/
 │   ├── up.sh               ★ 拉起包统一入口（打包时置于包根；拉起/停止/状态/S1-S10）
+│   ├── 13-A-bf16-tp8-…/    ★ 推荐主力（bf16 TP8 全P2P + custom-AR；01 的八卡版）
 │   ├── 01-A-sglang-tp4/    ★ 4 卡推荐（sglang·1M·无网关）    serve.sh + README
 │   ├── 02-A-dp2tp4-router/ ★ 8 卡推荐（DP2×TP4 + 粘性网关）  up.sh 一键全套
 │   ├── 03…08-*/            其余配置（TP8 / 基线 / C 线 vLLM）
 │   ├── common/             launch.sh（十步契约）、machine_prep（S1）、网关、部署映射
 │   ├── lib/                stages.sh（S3/S5/S7/S8/S9）、carrier.sh（载体适配）
-│   ├── 09-A-int8-tp4-…/    ★ INT8 低延迟档（单流d86p2300 聚合d148）
-│   ├── 10-A-int8-tp4-…/    ★ INT8 高QPS档（聚合d243p3990 单流d33）
+│   ├── 09-A-int8-tp4-…/    ⛔ INT8 低延迟档（单流d86p2300 聚合d148）—— INT8 全系暂不可投产
+│   ├── 10-A-int8-tp4-…/    ⛔ INT8 高QPS档（聚合d243p3990 单流d33）—— 同上
+│   ├── 11/12/14-*int8*/    ⛔ 其余 INT8 线（VMFault 未解，14 未发布）
 │   └── README.md           ★ 总索引：配置一览、推荐编号、契约逐阶段说明
 ├── patches/
 │   ├── hip-agent-filter/   dlhook2.c 源码 + prebuilt/dlhook2.so（SHA256）
