@@ -64,6 +64,12 @@ build_one(){
       cp "$P/hip-agent-filter/prebuilt/dlhook2.so" "$ROOT/dlhook2.so";;
     09|10|11|12)
       cp -r "$HERE/quant" "$ROOT/quant";;
+    13)   # bf16 TP8 全 P2P：v4 驱动补丁为硬前提，agent 过滤已退役 + 1M 农场
+      cp "$P/patch_v4.sh" "$ROOT/patches/"
+      cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm";;
+    14)   # INT8 TP8 全 P2P：v4 驱动补丁为硬前提，agent 过滤已退役 + 量化配方
+      cp "$P/patch_v4.sh" "$ROOT/patches/"
+      cp -r "$HERE/quant" "$ROOT/quant";;
   esac
 
   # 包根 README：一句话 + 指向线内 README

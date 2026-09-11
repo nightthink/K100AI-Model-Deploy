@@ -24,6 +24,44 @@ stage3_gate(){
   local acs; acs=$(sudo lspci -vvv 2>/dev/null | grep -c 'ACSCtl:.*SrcValid+')
   [ "$acs" = "0" ] && _say "  ✓ ACS 置位 0 个" || { _say "  ✗ ACS 仍有 $acs 个桥置位，P2P 会被 IOMMU 重定向且不报错"; fail=1; }
 
+  # -- 硬件耦合：内核 PCI P2P 白名单（双重检查：来源 + 运行时实效）--
+  # 背景：内核 drivers/pci/p2pdma.c 的 host_bridge_whitelist[] 只列 Intel 根桥。
+  #   本机根桥是海光 0x1d94:0x1480，不在其中 ⇒ 跨 socket 的
+  #   pci_p2pdma_distance_many() 返回 -1 ⇒ gpu_dma_buf_attach 清零
+  #   attach->peer2peer ⇒ dmabuf map 只给 GTT ⇒ 每次 map 把 BO 踢出 VRAM
+  #   ⇒ 驱逐活锁，TP8 全 P2P 直接起不来。
+  # 这是**通用版 Ubuntu 内核**的现状，不是海光的缺陷；海光版 OS 上可能不存在。
+  # 详见 docs/hycu.ko符号级还原-第一轮.md §17.5 与 §17.13。
+  #
+  # ① 来源项：本环境是否受该白名单影响（通用版内核 + 非 Intel 根桥）
+  # ② 运行时项：影响是否已被消除（v4 补丁是否在**运行中的驱动内存**里生效）
+  #   —— 只查磁盘 .ko 不够：文件改了但没重启，跑的仍是旧驱动。
+  local kflavor="厂商/未知"; uname -v | grep -qE '#[0-9]+-Ubuntu' && kflavor="通用版 Ubuntu"
+  local rootven; rootven=$(cat /sys/devices/pci0000:00/0000:00:00.0/vendor 2>/dev/null)
+  local subject=0
+  [ "$kflavor" = "通用版 Ubuntu" ] && [ "$rootven" != "0x8086" ] && subject=1
+  if [ "$subject" = 1 ]; then
+    _say "  · 内核=$kflavor（$(uname -r)）根桥 vendor=$rootven ⇒ 受 PCI P2P 白名单影响"
+    # 运行时实效：动态取符号地址（每次开机都变，绝不可写死）再读内存字节
+    local sym; sym=$(sudo grep -w gpu_dma_buf_attach /proc/kallsyms 2>/dev/null | awk '{print $1}' | head -1)
+    if [ -n "$sym" ] && command -v bpftrace >/dev/null 2>&1; then
+      local tgt; tgt=$(printf "%d" $((0x$sym + 0x4d)))
+      local byte; byte=$(sudo bpftrace -e "BEGIN { printf(\"%x\\n\", *(uint8 *)$tgt); exit(); }" 2>/dev/null \
+                          | grep -viE 'attach|^$' | tr -d ' \n')
+      case "$byte" in
+        eb) _say "  ✓ 运行中驱动已消除该影响（gpu_dma_buf_attach+0x4d=0xeb，v4 生效）";;
+        79) _say "  ✗ 运行中驱动**仍受影响**（+0x4d=0x79，v4 未生效）"
+            _say "    跨 socket P2P 会触发驱逐活锁。修复：sudo bash patches/patch_v4.sh apply 后**重启机器**"
+            fail=1;;
+        *)  _say "  ⚠ 无法判定运行时状态（读到 '$byte'，期望 eb/79）——偏移可能随驱动版本变化，请人工确认";;
+      esac
+    else
+      _say "  ⚠ 取不到 gpu_dma_buf_attach 符号或缺 bpftrace，跳过运行时项"
+    fi
+  else
+    _say "  ✓ 内核=$kflavor 根桥=$rootven ⇒ 不受 PCI P2P 白名单影响，无需 v4"
+  fi
+
   # -- 硬件耦合：海光 hycu 绑定 --
   local bound; bound=$(ls -d /sys/bus/pci/drivers/hycu/0000:* 2>/dev/null | wc -l)
   [ "$bound" -ge "$expect_gpu" ] && _say "  ✓ hycu 已绑定 $bound 张卡" || { _say "  ✗ hycu 只绑定 $bound/$expect_gpu"; fail=1; }

@@ -10,7 +10,12 @@
 **实测（输出 6144 token，对照 A-sglang-tp4-1m）**：80k 上 prefill **1,270→2,548 tok/s（2.01×）**、
 TPOT **63.40→48.2 ms（1.31×）**；64k 上两者基本持平。**赢在长输入不塌**。
 
-⚠ 去掉 `--disable-custom-all-reduce` 会让 rank0 SIGSEGV（aiter 的 custom AR 在 K100-AI 上崩）。
+~~⚠ 去掉 `--disable-custom-all-reduce` 会让 rank0 SIGSEGV（aiter 的 custom AR 在 K100-AI 上崩）。~~
+
+★ **2026-09-11 作废上面这条**：那是 **0811 树**时期的观察。本线 v2 起已迁 0828 树，
+该实现已修，实测本线 `custom_AR_ranks=4`、custom AR 正常启用，无 SIGSEGV。
+13 线单变量 A/B 证明 custom AR 值 **2.15×**（decode），
+见 A/B 定案（内部记录 `docs/bench-2026-09-09-选线指南/custom-all-reduce-AB定案.md`，不随拉起包发布）。
 
 ## 元数据（`launch.sh` 据此做 S3 校验与 S8 自证）
 
@@ -35,7 +40,7 @@ bash common/serve_router.sh          # 单一入口 8100
 **实测（2026-08-27，numa_balancing=0，64k 输入 / 6144 输出）**：并发 8 时
 prefill 聚合 **6,298 tok/s**、decode 聚合 **127.35 tok/s**，分别是 TP8 混合的
 **2.91×** 与 **2.55×**；并发 12 仍在涨（7,309 / 153.78）。
-详见 [`docs/sla-2026-08-27/DP2xTP4-vs-TP8.md`](../../../docs/sla-2026-08-27/DP2xTP4-vs-TP8.md)。
+详见内部记录 `docs/sla-2026-08-27/DP2xTP4-vs-TP8.md`（不随拉起包发布）。
 
 ⚠ **router 必须单 worker** —— 会话表与在飞计数是进程内状态，加 `--workers` 粘性立即失效。
 会话粘性已实测验证（`tests/sticky_test.py`）：带 `X-Session-Id` 6/6 同副本、
@@ -50,4 +55,4 @@ TEARDOWN=1 bash common/launch.sh A-sglang-tp4-tuned     # 冒烟
 
 > 本目录自给自足：除 `lib/`（阶段契约）、`common/`（跨配置工具）、
 > `patches/`（补丁）外，本配置用到的一切都在这里。
-> 规范见 [`docs/方案脚本规范-设计文档.md`](../../../docs/方案脚本规范-设计文档.md)。
+> 规范见 [`docs/方案脚本规范-设计文档.md`](../../docs/方案脚本规范-设计文档.md)。

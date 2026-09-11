@@ -1,5 +1,38 @@
 # 11 · INT8 + DFlash2 + custom-AR —— 深上下文冠军档（2026-09-02）
 
+> ## ⛔ 2026-09-11：INT8 全系暂不可投产
+>
+> **VMFault 两次复现**：2026-09-10 存活 19 分 26 秒、2026-09-11 存活 37 分钟。
+> 两次都发生在**低负载、显存充裕**时（KV 池占用 4%、单请求解码），
+> **无一致前兆**——首次伴随 `pool memory leak` 告警 104 次，第二次该告警 0 次，
+> 故该线索已被撤回。v4 驱动补丁不是解法（dmabuf 与 INT8 内核是两个子系统）。
+>
+> 嫌疑收敛到 **INT8 W8A8 权重 + 镜像的 INT8 内核路径**本身，尚未定位。
+> 本线拉起包本身可正常启动并通过自证，但**不建议投入生产**。
+> bf16 主线（01 / 13）不受影响。
+
+
+> ### ⚠ 2026-09-09 更正：custom AR 实际从未启用
+>
+> 实测（四个 rank 一致）：
+> ```
+> disable_custom_all_reduce=False                        ← 我们确实没禁用
+> [AR] All-reduce call path: NCCL (custom AR disabled)   ← SGLang 因无 XGMI 自行关闭
+> ```
+> 全程 `gpu_gpukfd_gpuvm_import_dmabuf = 0`，**没有建立任何进程间 IPC 映射**。
+>
+> ⇒ 本线历史上归因于「AR 开」的性能收益（短 +40% / 深暖 +64%），
+> **实际来自同批改动的其他参数**（DocPang 模板、pack min-q 2048、mem 0.95、
+> graphs 1-8、mamba 32）。**实测数据仍有效，错的是原因。**
+>
+> ⇒ 「同 socket 门禁是因为 AR/IPC」这一理由不成立；门禁暂时保留，
+> 但依据改为「跨 socket 的 NCCL 传输侧已知问题」（见 13/14 线 README）。
+>
+> ⇒ 由此也说明：**hycu.ko 的 v2 补丁对本线无收益**——它修的是进程间 IPC
+> 映射中毒，而本线不触发该路径。
+
+
+
 4 卡（同 socket 组），Qwen3.8-27B 海光官方 Channel-INT8 + z-lab DFlash2 投机 + **custom all-reduce 开启**。
 09 的直系升级：同权重同镜像同补丁链，差异全在参数体系（DocPang v30 吸收，dp30 系列 A/B 定界）。
 

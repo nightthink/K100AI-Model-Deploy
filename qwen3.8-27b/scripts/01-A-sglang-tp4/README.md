@@ -1,5 +1,26 @@
 # 01 · A 线 · 4 卡 · TP4（★ 4 卡推荐）
 
+> ### ⚠ 2026-09-09 更正：custom AR 实际从未启用
+>
+> 实测（四个 rank 一致）：
+> ```
+> disable_custom_all_reduce=False                        ← 我们确实没禁用
+> [AR] All-reduce call path: NCCL (custom AR disabled)   ← SGLang 因无 XGMI 自行关闭
+> ```
+> 全程 `gpu_gpukfd_gpuvm_import_dmabuf = 0`，**没有建立任何进程间 IPC 映射**。
+>
+> ⇒ 本线历史上归因于「AR 开」的性能收益（短 +40% / 深暖 +64%），
+> **实际来自同批改动的其他参数**（DocPang 模板、pack min-q 2048、mem 0.95、
+> graphs 1-8、mamba 32）。**实测数据仍有效，错的是原因。**
+>
+> ⇒ 「同 socket 门禁是因为 AR/IPC」这一理由不成立；门禁暂时保留，
+> 但依据改为「跨 socket 的 NCCL 传输侧已知问题」（见 13/14 线 README）。
+>
+> ⇒ 由此也说明：**hycu.ko 的 v2 补丁对本线无收益**——它修的是进程间 IPC
+> 映射中毒，而本线不触发该路径。
+
+
+
 | 项 | 值 |
 |---|---|
 | 卡数 | **4**（同 socket：0-3 或 4-7）|

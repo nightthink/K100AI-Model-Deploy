@@ -7,6 +7,7 @@
 # @requires $MODELS_ROOT/Qwen3.8-27B-1M $MODELS_ROOT/Qwen3.8-27B $CFGDIR/minichain5n/sitecustomize.py
 # @attest 上下文长度:context_length
 # @attest 投机解码NEXTN:speculative
+# @attest custom all-reduce启用:custom allreduce
 # ============================================================================
 # 01 · bf16 + NEXTN · TP4 —— 全精度主线 v2（2026-09-03 迁树升级）
 #
@@ -25,6 +26,21 @@
 #   - 1M 农场 tokenizer 较旧缺 think 结束符：挂 hygon INT8 目录的 tokenizer 两件（同词表）
 #   - 就绪探测用 /model_info（/health 注入生成请求）
 #   - ⚠ 02 号线内嵌本配置：本次升级后 02 需重新验收方可发布
+#
+# ★ 2026-09-11 再更正：**撤回下面这条"custom AR 从未启用"的旧更正**。
+#   本线实测 `custom_AR_ranks=4`（拉起日志 `using PCIe's custom allreduce`），
+#   custom AR **确实在用**。13 线的单变量 A/B 进一步证明它值 2.15×
+#   （服务端单流 gen throughput 开 41.7~56.7 vs 关 23.0~28.2，accept rate 两侧持平）。
+#   见 docs/bench-2026-09-09-选线指南/custom-all-reduce-AB定案.md
+#   ⇒ 与本文件上方 v2 变化里"0828 树实现已修"一致；09-09 那条更正是在 0811 树
+#     的观察上作出的，迁到 0828 树后已不成立。已加 @attest 自证项，拉起时校验。
+#
+# ~~⚠ 2026-09-09 更正：custom AR 实际从未启用~~（**已于 2026-09-11 撤回，见上**）
+#   当时依据：四个 rank 输出 `[AR] All-reduce call path: NCCL (custom AR disabled)`。
+#   保留此行仅为记录判断变更的轨迹，**不要据此配置**。
+#
+# 同 socket 门禁：理由不再是"因为 AR/IPC"，而是本线定位就是四卡方案；
+# 跨 socket 的 TP8 见 13 线（需 v4 补丁）。
 # ============================================================================
 set -e
 GPUS="${GPUS:-0,1,2,3}"; PORT="${PORT:-8101}"; NAME="${NAME:-q38-sgA}"

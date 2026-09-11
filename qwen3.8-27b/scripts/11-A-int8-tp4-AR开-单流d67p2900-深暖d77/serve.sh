@@ -27,6 +27,15 @@
 #   - 卡组必须同 socket（0,1,2,3 或 4,5,6,7）——AR/P2P 跨 socket 会踩 52ms 活锁
 #   - 就绪探测只能用 /model_info 或 /v1/models（/health 会注入生成请求）
 #   - bs16×投机=崩 边界仍在；graphs 到 8 已验证
+#
+# ⚠ 2026-09-09 更正：**custom AR 实际从未启用**。
+#   实测四个 rank 一致输出 `[AR] All-reduce call path: NCCL (custom AR disabled)`，
+#   即使 `disable_custom_all_reduce=False` —— SGLang 因本机无 XGMI 自行关闭。
+#   ⇒ 本线历史上归因于 "AR 开" 的性能收益，实际来自同批改动的其他参数
+#     （DocPang 模板 / pack min-q / mem / graphs / mamba）。归因已更正，
+#     配置本身不变（实测数据仍然有效，只是原因写错了）。
+#   ⇒ 同 socket 门禁的"因为 AR/IPC"这一理由不成立；但门禁暂时保留——
+#     跨 socket 仍有 NCCL 传输侧的已知问题（见 13/14 线 README）。
 # ============================================================================
 set -e
 GPUS="${GPUS:-0,1,2,3}"; PORT="${PORT:-8111}"; NAME="${NAME:-q38-int8C}"
