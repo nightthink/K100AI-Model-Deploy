@@ -10,8 +10,8 @@
 # DSv4-02 · 0731-w8a8 无投机 · TP8 —— 任意温度稳线（2026-08-14 定稿生产线固化）
 #
 # 实测：temperature=0.7 × 8 并发 8/8 全通，聚合 52.2 tok/s；单流 ~12.3 tok/s。
-#   定位：需要采样（temperature>0）+ 高并发的场景；01 线（DSpark 贪心）的安全后备。
-#   权重为 01 线权重剔除 DSpark 张量的版本（quant/ 配方同时产出两者）。
+#   定位：需要采样（temperature>0）+ 高并发的场景；101 线（DSpark 贪心）的安全后备。
+#   权重为 101 线权重剔除 DSpark 张量的版本（quant/ 配方同时产出两者）。
 #
 # 边界：Think 需显式 chat_template_kwargs；就绪 ~14 分钟；勿改 --kv-cache-dtype。
 #

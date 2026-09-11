@@ -42,7 +42,7 @@ if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo docker";
 PFX="01ma.cli-model-svc-"          # ★ 本流程所有运行时产物的识别前缀
 mkdir -p "$HERE/logs" 2>/dev/null || true
 
-cfg_dirs(){ ls -d "$HERE"/[0-9][0-9]-* 2>/dev/null; }
+cfg_dirs(){ ls -d "$HERE"/[0-9][0-9]*-* 2>/dev/null; }   # 两位/三位编号通吃
 meta(){ grep -E "^# @$2[ \t]" "$1/serve.sh" 2>/dev/null | sed -E "s/^# @$2[ \t]+//" | head -1; }
 cfg_name(){  # 编号/目录名 → 目录名
   local d; d=$(ls -d "$HERE/$1"-* 2>/dev/null | head -1)

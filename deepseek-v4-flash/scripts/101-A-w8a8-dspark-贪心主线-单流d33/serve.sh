@@ -15,7 +15,7 @@
 # 硬边界（均已实证，详见线内 README）：
 #   ⚠ 只在 temperature=0（贪心）稳定；temp>0 且并发≥8 触发 GPU 硬件异常
 #     HSA_STATUS_ERROR_EXCEPTION 0x1016，服务挂死需重启（~14 分钟）。
-#     需要采样+高并发 → 用 02 线（无投机，任意温度稳定）。
+#     需要采样+高并发 → 用 102 线（无投机，任意温度稳定）。
 #   ⚠ 勿改 --kv-cache-dtype：解码内核按 fp8 布局读 KV，bf16 会静默乱码
 #     且 accept rate 恒 1.00（这是告警信号不是好消息）。
 #   ⚠ Think 需请求显式带 chat_template_kwargs={"thinking": true}。

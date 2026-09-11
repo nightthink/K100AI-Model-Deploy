@@ -102,12 +102,15 @@ serve_path = root / cfg / "serve.sh"
 # 多容器编排线（如 02）无单一 serve.sh：入口为该配置目录内 up.sh，引擎/模型字段降级为 null
 serve = serve_path.read_text(encoding="utf-8", errors="replace") if serve_path.exists() else ""
 
-def meta(tag):
+def meta(tag, split=False):
+    """收集 `# @tag 值` 行。split=True 时按空白拆成多项——
+    @requires 语义上是**多个路径**，整串返回会让消费方无法逐项校验。"""
     out = []
     for line in serve.splitlines():
         m = re.match(rf"#\s*@{tag}[ \t]+(.*)", line)
         if m:
-            out.append(m.group(1).strip())
+            v = m.group(1).strip()
+            out.extend(v.split()) if split else out.append(v)
     return out
 
 def resolve_num(token):
@@ -155,7 +158,7 @@ manifest = {
         "SKIP_FETCH": "SKIP_S2 的兼容别名",
         "MODELS_ROOT": "模型权重根目录（默认 /data/models）",
     },
-    "requires": meta("requires"),
+    "requires": meta("requires", split=True),
     "served_model": served_model,
     "context_length": context_length,
     "files": files,
@@ -174,7 +177,7 @@ PYEOF
 }
 
 if [ "$SEL" = all ]; then
-  for d in "$S"/[0-9][0-9]-*/; do build_one "$(basename "$d" | cut -c1-2)"; done
+  for d in "$S"/[0-9][0-9]*-*/; do b=$(basename "$d"); build_one "${b%%-*}"; done
 else
   build_one "$SEL"
 fi

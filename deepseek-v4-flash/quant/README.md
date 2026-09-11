@@ -6,6 +6,6 @@
 2. `python3 quant_w8a8_0731.py`（逐通道 W8A8，含 DSpark 张量保留版与剔除版双输出）
 3. `bash run_0731_pipeline.sh` 一键串联（量化 + 校验）
 
-产物目录：`dsv4-0731-w8a8-dspark`（01 线用）与 `dsv4-0731-w8a8`（02 线用）。
+产物目录：`dsv4-0731-w8a8-dspark`（101 线用）与 `dsv4-0731-w8a8`（102 线用）。
 注意：ModelScope 上 `hygon/DeepSeek-V4-Flash-Channel-INT8-w8a8`（2026-05-15）是更老的
 量化谱系，与本包补丁未联测——请用本配方产物。

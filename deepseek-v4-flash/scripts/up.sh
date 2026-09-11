@@ -2,7 +2,14 @@
 # ============================================================================
 # ★ 拉起包统一入口（固定名称 up.sh）—— 放在包根目录，目录中立
 #
-#   bash up.sh                        # 自检 + 配置一览 + 推荐
+#   ⚠ `bash up.sh`（无参数）的行为**取决于包形态**，两者不同：
+#     · 一线一包（包根有 .primary，即现场拿到的所有 dsv4-kit-NNN 包）
+#         → **直接拉起该线**，等同 `bash up.sh NNN`。不是预览！
+#     · 多配置树（仓库侧 deploy-kit/scripts/，无 .primary）
+#         → 只打印自检 + 配置一览 + 推荐，不拉起。
+#     要在一线一包里"只看不拉"，用 `bash up.sh status`。
+#
+#   bash up.sh                        # 见上：一线一包=拉起；多配置树=一览
 #   bash up.sh 09                     # 拉起 09 号线（体检→S1→S2..S8→真实请求冒烟）
 #   bash up.sh 10 GPUS=4,5,6,7        # 带参数拉起（KEY=VAL 透传给 launch.sh）
 #   bash up.sh 09 status              # 观察该线状态
@@ -35,7 +42,7 @@ if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo docker";
 PFX="01ma.cli-model-svc-"          # ★ 本流程所有运行时产物的识别前缀
 mkdir -p "$HERE/logs" 2>/dev/null || true
 
-cfg_dirs(){ ls -d "$HERE"/[0-9][0-9]-* 2>/dev/null; }
+cfg_dirs(){ ls -d "$HERE"/[0-9][0-9]*-* 2>/dev/null; }   # 两位/三位编号通吃
 meta(){ grep -E "^# @$2[ \t]" "$1/serve.sh" 2>/dev/null | sed -E "s/^# @$2[ \t]+//" | head -1; }
 cfg_name(){  # 编号/目录名 → 目录名
   local d; d=$(ls -d "$HERE/$1"-* 2>/dev/null | head -1)
@@ -79,7 +86,7 @@ do_status(){
   printf "  %-4s %-30s %-6s %-8s %-12s %s\n" 编号 实例 端口 接口 容器 重启
   local d n c st rc p
   for d in $(cfg_dirs); do
-    local base num; base=$(basename "$d"); num=$(echo "$base" | cut -c1-2)
+    local base num; base=$(basename "$d"); num="${base%%-*}"
     [ -n "${1:-}" ] && [ "$num" != "$1" ] && continue
     p=$(cfg_port "$base")
     local names; names=$(cfg_names "$base")
@@ -113,7 +120,7 @@ do_logs(){  # 本线容器 docker 日志
 do_stop(){
   local d base num n
   for d in $(cfg_dirs); do
-    base=$(basename "$d"); num=$(echo "$base" | cut -c1-2)
+    base=$(basename "$d"); num="${base%%-*}"
     [ -n "${1:-}" ] && [ "$num" != "$1" ] && continue
     for n in $(cfg_names "$base") $(cfg_legacy "$base"); do
       [ -z "$n" ] && continue
@@ -211,7 +218,7 @@ menu(){
 if [ -f "$HERE/.primary" ]; then
   # ★ 一线一包模式：本包只服务 .primary 指定的配置
   CFGNAME=$(cat "$HERE/.primary")
-  NUM=$(echo "$CFGNAME" | cut -c1-2)
+  NUM="${CFGNAME%%-*}"
   # 容忍多余的编号前缀参数（up.sh 09 status 等价于 up.sh status）
   [ "${1:-}" = "$NUM" -o "${1:-}" = "$CFGNAME" ] && shift
   case "${1:-up}" in
@@ -229,7 +236,7 @@ else
     logs)    shift; do_logs "${1:-}";;
   esac
   CFGNAME=$(cfg_name "$ACT"); [ -n "$CFGNAME" ] || die "找不到配置「$ACT」" "bash up.sh 看可用编号"
-  NUM=$(echo "$CFGNAME" | cut -c1-2); shift
+  NUM="${CFGNAME%%-*}"; shift
   case "${1:-up}" in
     status) do_status "$NUM"; exit 0;;
     stop)   do_stop "$NUM"; exit 0;;
