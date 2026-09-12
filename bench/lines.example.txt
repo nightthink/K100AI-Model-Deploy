@@ -1,0 +1,25 @@
+# 线清单示例 —— 供 run_lines.sh 读取
+#
+#   bash run_lines.sh <profile> <本文件> [每线小时数]
+#
+# 每行四列，空格分隔；# 开头为注释。串行执行，顺序即列出顺序。
+#   TAG   拉起包解包后的目录        端口   容器名
+#
+# TAG 只用于给输出目录和日志命名（输出落在 $OUT_ROOT/<profile>_<TAG>/）。
+# 端口与容器名必须与该线 serve.sh 里的 @port / @name 一致，否则就绪探针
+# 会一直等不到、或 cachestat 采样到错误的容器。
+#
+# ── Qwen3.8-27B（profile: qwen3.8-27b）────────────────────────────────
+# 13    /path/to/q38-kit-13   8113   q38-bf16tp8
+# 01    /path/to/q38-kit-01   8101   q38-sgA
+#
+#   ⛔ INT8 各线（09/10/11/12/14）暂不可投产（VMFault 未解），
+#      要测也可以，但结论不能用于选型。
+#
+# ── DeepSeek-V4-Flash（profile: deepseek-v4-flash）────────────────────
+# 101   /path/to/dsv4-kit-101   8120   dsv4-dspark
+# 102   /path/to/dsv4-kit-102   8121   dsv4-nospec
+#
+#   101 线只在 temperature=0 稳定（temp>0 且 top_k≥2 会触发 GPU 硬件异常）；
+#   本 harness 的 S1/S3/S5/S6 默认 temperature=0.7，跑 101 线前请确认这一点，
+#   或改用 102 线（无投机，任意温度稳定）。
