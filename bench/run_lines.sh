@@ -33,6 +33,9 @@ LOG="${LOG:-/tmp/run_lines.log}"
 : > "$LOG"
 say(){ echo "[$(date +%T)] $*" | tee -a "$LOG"; }
 
+# 各线跑完后登记，供末尾出双线对照报告用（脚本开头是 set -u，必须先声明）
+DONE_OUTS=(); DONE_TAGS=()
+
 # 就绪探针要匹配什么，问档案要——不同模型的 served-model-name 不同
 READY=$(python3 -c "
 import sys; sys.path.insert(0,'$BENCH')
@@ -94,6 +97,14 @@ run_line(){
   # 容器日志单独留存：cachestat 依赖的 `Prefill batch` 行只在容器日志里
   # （曾因日志被下一轮清空而误判「命中率数据无出处」）
   sudo docker logs "$CT" > "$OUT/container.log" 2>&1
+
+  # 同口径报告：prefill 与 decode 分开统计。run_bench.py 内置的 report.md 是简报，
+  # 这份才是历次对照文档所用的口径（prefill=prompt_tok/ttft、decode=1/tpot、
+  # 合计吞吐=(ptok+ctok)/e2el），两条线必须用同一个生成器出，否则不可比。
+  python3 "$BENCH/report2.py" "$OUT/requests.jsonl" "$PROFILE-$TAG" \
+    > "$OUT/report2.md" 2>>"$LOG" && say "$TAG 同口径报告 → $OUT/report2.md"
+  DONE_OUTS+=("$OUT"); DONE_TAGS+=("$TAG")
+
   sudo docker rm -f "$CT" >/dev/null 2>&1; sleep 10
   say "===== $TAG 完成（输出 $OUT）====="
 }
@@ -103,4 +114,24 @@ while read -r TAG DIR PORT CT; do
   case "${TAG:-}" in ""|\#*) continue;; esac
   run_line "$TAG" "$DIR" "$PORT" "$CT"; n=$((n+1))
 done < "$LINES_FILE"
+
+# 恰好两条线时，把两份同口径报告合订成一个文件。
+# 注意 report2.py 的 --compare 并不做并排逐项对比，它是先后输出两份报告、
+# 以 --- 分隔；但两份出自同一生成器、同一套口径，可以直接对读——
+# 价值在「口径一致」而不在「自动算差值」，别把它当成算好的对比表。
+# 三条以上不自动合订：谁跟谁比取决于实验设计，猜错不如不猜。
+if [ "${#DONE_OUTS[@]}" -eq 2 ]; then
+  CMP="$OUT_ROOT/compare_${PROFILE}_${DONE_TAGS[0]}_vs_${DONE_TAGS[1]}.md"
+  if python3 "$BENCH/report2.py" \
+       "${DONE_OUTS[0]}/requests.jsonl" "${DONE_OUTS[1]}/requests.jsonl" \
+       --compare "${DONE_TAGS[0]}" "${DONE_TAGS[1]}" > "$CMP" 2>>"$LOG"; then
+    say "两线同口径报告合订 → $CMP"
+  else
+    say "合订失败（见 $LOG）；两线各自的 report2.md 仍可用"
+  fi
+elif [ "${#DONE_OUTS[@]}" -gt 2 ]; then
+  say "已跑 ${#DONE_OUTS[@]} 条线，未自动合订——请自行指定要比的两条："
+  say "  python3 $BENCH/report2.py <A>/requests.jsonl <B>/requests.jsonl --compare A B"
+fi
+
 say "########## $n 条线全部完成 ##########"
