@@ -45,10 +45,53 @@ import sys; sys.path.insert(0,'$BENCH')
 import profiles; print(profiles.get('$PROFILE')['model'])") || exit 1
 say "档案 $PROFILE：model=$MODELNAME 就绪探针=$READY 每线 ${HOURS}h"
 
+# 停容器后必须等显存真正退干净，不能只 sleep 固定秒数。
+#
+# 大模型线的显存余量本就很紧（实测：mem-fraction 0.85 时 57.5GB 已占，
+# 16K prompt 的单 chunk 激活还要 4GB；某卡只剩 604MB 时直接 HIP OOM、
+# 调度器崩溃）。上一条线的显存若没退完，下一条按同样的 mem-fraction 去算
+# KV 池就会踩到 OOM 线——白跑一整组，而且失败形态看起来像「这条线起不来」，
+# 极易误判成配置问题。
+
+# 找 smi 工具：**非交互 ssh 的 PATH 不含 /opt/hyhal/bin**，直接写 `hy-smi` 会
+# command not found；若再把错误吞掉，就成了「看起来查过、其实没查」。
+_find_smi(){
+  local c
+  for c in /opt/hyhal/bin/hy-smi /opt/dtk/bin/rocm-smi \
+           "$(command -v hy-smi 2>/dev/null)" "$(command -v rocm-smi 2>/dev/null)"; do
+    [ -n "$c" ] && [ -x "$c" ] && "$c" --showmeminfo vram >/dev/null 2>&1 && { echo "$c"; return 0; }
+  done
+  return 1
+}
+
+wait_vram_free(){
+  # 阈值单位是 **MiB**：hy-smi 打的是
+  #   HCU[0]  : vram Total Used Memory (MiB): 63717
+  # 不是字节。按字节写阈值（或按 9 位以上数字去抓）会永远匹配不到，
+  # 于是函数每次都「立刻通过」——这个坑我踩过一次，记在这里。
+  local lim_mib=${1:-2000} smi i u=""
+  if ! smi=$(_find_smi); then
+    say "  ⚠ 找不到可用的 smi 工具，无法确认显存已释放 —— 改为固定等待 90s"
+    sleep 90; return 0
+  fi
+  for i in $(seq 1 36); do          # 最多 3 分钟
+    u=$("$smi" --showmeminfo vram 2>/dev/null \
+        | grep -i "Total Used Memory" | grep -oE '[0-9]+$' | sort -rn | head -1)
+    if [ -z "$u" ]; then
+      say "  ⚠ smi 输出解析不到显存数值（格式可能变了）—— 改为固定等待 90s"
+      sleep 90; return 0
+    fi
+    [ "$u" -lt "$lim_mib" ] && { say "  显存已释放（峰值卡 ${u} MiB）"; return 0; }
+    sleep 5
+  done
+  say "  ⚠ 3 分钟后峰值卡仍占 ${u} MiB，继续但需留意 OOM"
+}
+
 run_line(){
   local TAG=$1 DIR=$2 PORT=$3 CT=$4
   say "===== 开始 $TAG 线（$DIR, port $PORT, 容器 $CT）====="
   sudo docker rm -f "$CT" >/dev/null 2>&1; sleep 5
+  wait_vram_free
   ( cd "$DIR" && bash serve.sh ) >> "$LOG" 2>&1
 
   local T0; T0=$(date +%s)
