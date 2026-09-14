@@ -114,6 +114,22 @@ S3 命中率 52~70% vs 92~94%）。
 6. 其余边界承 01 线：1M 农场符号链接、overrides 两个 preprocessor json、
    NEXTN steps 2 / draft 3（draft4 在本树深上下文塌方）。
 
+7. **Think 默认开启，关闭用 `enable_thinking`——不是 `thinking`。**
+   ```jsonc
+   // 关闭思考（content 直接给答案）
+   "chat_template_kwargs": {"enable_thinking": false}
+   ```
+   不传任何 override 时**默认就思考**：`content` 返回 null，`max_tokens` 全部进
+   `reasoning_content`——短 `max_tokens` 场景下会表现为「只出思考、不出答案」。
+   实测（2026-09-14，本线线上）：`{"enable_thinking": false}` → `content="0.5"`、
+   `finish_reason=stop`、4 token；而 `{"thinking": false}` **无效，仍然思考**。
+   与 11 线 README 的记载一致（同为 Qwen3.8 底座）。
+
+   > ⚠ **`{"thinking": true/false}` 是 DeepSeek-V4 的写法，不适用于本线。**
+   > 两个模型的 chat template 参数名不同，**勿跨模型套用**。误用该键名时服务
+   > 既不报错、也不生效，表现为「参数明明传了却仍然思考」——最容易被误判成
+   > 模型或权重出了问题，实际只是键名不对。
+
 ## 何时用这条线
 
 - 需要 **bf16 全精度**且要吞吐 → 选本线（相对 01 线是纯增益，只是启动慢）
