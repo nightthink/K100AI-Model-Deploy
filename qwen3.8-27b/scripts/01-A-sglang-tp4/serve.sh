@@ -50,7 +50,10 @@ CFGDIR="${CFGDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 MODELS_ROOT="${MODELS_ROOT:-/data/models}"
 M="$MODELS_ROOT/Qwen3.8-27B-1M"
 TOK="$MODELS_ROOT/Qwen3.8-27B-Channel-INT8-w8a8-hygon"
-mkdir -p "$D/tritoncache-int8" 2>/dev/null || true
+# ★ Triton 缓存按实例隔离：同一个包起 N 个实例时，若共用一个缓存目录，
+#   N 个 sglang 会并发读写同一份 JIT 产物。此前 A/B 测试解成两个目录才没撞上。
+TRITONC="${TRITONC:-$D/tritoncache-int8-$NAME}"
+mkdir -p "$TRITONC" 2>/dev/null || true
 if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo docker"; fi
 
 case "$GPUS" in
@@ -70,7 +73,7 @@ $DOCKER run -d --name "$NAME" \
   --network host --ipc host --privileged --shm-size 128g \
   --device=/dev/kfd --device=/dev/dri --device=/dev/mkfd \
   --group-add video --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
-  -v "$D/tritoncache-int8":/tritoncache -e TRITON_CACHE_DIR=/tritoncache \
+  -v "$TRITONC":/tritoncache -e TRITON_CACHE_DIR=/tritoncache \
   -v /opt/hyhal:/opt/hyhal:ro \
   -v "$MODELS_ROOT":"$MODELS_ROOT":ro \
   -v "$M":/models/target:ro \

@@ -41,8 +41,23 @@ build_one(){
   for f in $COMMON_CORE; do cp "$S/common/$f" "$ROOT/common/"; done
   cp -r "$S/lib/." "$ROOT/lib/"
   cp "$P/rccl-acs-topo/acs_clear_all.sh" "$P/rccl-acs-topo/acs-clear.service" "$ROOT/patches/"
-  cp "$HERE/docs/方案脚本规范-设计文档.md" "$ROOT/docs/"
+  for _d in "$HERE"/docs/*.md; do [ -f "$_d" ] && cp "$_d" "$ROOT/docs/"; done
   cp -r "$CFGDIR" "$ROOT/$CFG"
+  # ★ 标准性能测试：全部线同一个脚本、同一口径，随包分发，供 `bash up.sh benchmark` 调用
+  # ★ 2026-09-17：按**候选路径**解析，两个仓都要能打包。
+  #   私仓  $HERE=<repo>/deploy-kit          ⇒ 工具在 $HERE/../tests/
+  #   公开仓 $HERE=<repo>/qwen3.8-27b        ⇒ 工具在顶层 $HERE/../bench/
+  #   原先写死 $HERE/../tests/，公开仓里解析不到，`✗ 构建失败：01`。
+  #   另：文档那行原带 `2>/dev/null || true`，拷不到也不吭声，包里会悄悄少一份文档——
+  #   与发布器 BENCH_SRC 的静默跳过是同一种病，故一并改为**找不到就报错**。
+  mkdir -p "$ROOT/bench"
+  _pick(){ local c; for c in "$@"; do [ -f "$c" ] && { echo "$c"; return 0; }; done; return 1; }
+  _SL=$(_pick "$HERE/../tests/standard_load.py" "$HERE/../bench/standard_load.py") \
+    || { echo "✗ 找不到 standard_load.py（已试 ../tests/ 与 ../bench/）"; return 1; }
+  cp "$_SL" "$ROOT/bench/standard_load.py"
+  _SD=$(_pick "$HERE/../docs/标准性能测试.md" "$HERE/../bench/标准性能测试.md") \
+    || { echo "✗ 找不到 标准性能测试.md（已试 ../docs/ 与 ../bench/）"; return 1; }
+  cp "$_SD" "$ROOT/docs/"
 
   # 按线附件
   case "$NN" in
@@ -64,6 +79,13 @@ build_one(){
       cp "$P/hip-agent-filter/prebuilt/dlhook2.so" "$ROOT/dlhook2.so";;
     09|10|11|12)
       cp -r "$HERE/quant" "$ROOT/quant";;
+    15)   # 0.5.18 基版 · TP4：1M 农场 + repair.py 提取件（0.5.18 上游未修 gfx928 paged-varlen）
+      cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm"
+      cp -r "$P/repair-from-0512" "$ROOT/patches/repair-from-0512";;
+    16)   # 0.5.18 基版 · TP8 全 P2P：v4 补丁 + 1M 农场 + repair.py 提取件
+      cp "$P/patch_v4.sh" "$ROOT/patches/"
+      cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm"
+      cp -r "$P/repair-from-0512" "$ROOT/patches/repair-from-0512";;
     13)   # bf16 TP8 全 P2P：v4 驱动补丁为硬前提，agent 过滤已退役 + 1M 农场
       cp "$P/patch_v4.sh" "$ROOT/patches/"
       cp -r "$P/model-1m-farm" "$ROOT/patches/model-1m-farm";;

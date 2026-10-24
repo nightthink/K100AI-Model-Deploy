@@ -21,6 +21,14 @@ python3 /patches/patch_triton_backend.py
 python3 /patches/patch_dflash_renorm.py
 python3 /patches/patch_dspark_torch_accept.py
 python3 /patches/patch_moe_align.py
+# 2026-09-13 G/H 步（行为中性钩子：未设 DSV4_BF16FP32_ALGO / 无 moe_configs/*.json 时为空操作）
+python3 /patches/patch_bf16fp32_gemm.py
+python3 /patches/patch_moe_config.py
+python3 /patches/patch_sparse_prefill.py
+# 2026-09-13 hc bmm 改写（行为中性钩子：未设 DSV4_HC_BMM=1 时为空操作）
+python3 /patches/patch_hc_bmm.py
+# 2026-09-13 候选⑨ dual_scope autotune 扩表（未设 DSV4_DUAL_SCOPE_EXTRA_CFG=1 时为空操作）
+python3 /patches/patch_dual_scope_configs.py
 ulimit -l unlimited
 
 # --- 官方必需 env（沿用 0728 线实测有效的一整套）---

@@ -10,6 +10,11 @@ tar xzf q38-kit-09-*.tar.gz && cd q38-kit-09
 bash up.sh                # 拉起本线（体检→S1→S2..S8→真实请求冒烟，全自动）
 bash up.sh GPUS=4,5,6,7   # 带参拉起（KEY=VAL 透传）
 bash up.sh status         # 观察      bash up.sh stop   # 停止(S9)
+
+# ★ 同机多实例（同一个包、同一个脚本，只改卡与端口）
+bash up.sh GPUS=0,1,2,3 PORT=8101      # 实例一
+bash up.sh GPUS=4,5,6,7 PORT=8102      # 实例二（名字按端口自动派生）
+bash up.sh status/logs/restart/stop PORT=8102   # 管理时以端口为句柄，定点到该实例
 ```
 
 每包只含本线所需（02 包内嵌其依赖的 01 副本配置与网关件）；

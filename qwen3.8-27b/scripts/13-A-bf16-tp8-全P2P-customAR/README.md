@@ -37,6 +37,20 @@
 服务就绪 436 s（旧版 462 s）；全程 `evict_process_worker` = 0、`schedule_evict` = 0；
 361 请求 / 1.10 小时**服务错误 0 次**。
 
+> ### ⛔ 以下两节的数字均为**旧口径，已作废**（2026-09-17）
+>
+> 本节及上节用的是**字符**口径（输入 40K–350K 字符、均值约 150K、命中 92~94%）。
+> 用户 2026-09-17 确认的唯一权威口径是 **token**：
+> **输入 45K–350K token（均值 160K）／输出 500–4K token（均值 800）／
+> 输入 cache 命中率均值 95%、最小 85%／涨到 350K 后切 ~70K 全新前缀。**
+>
+> 字符与 token **不是一回事**——本模型实测约 **1.745 字/token**，
+> 「350K 字符」只相当于约 20 万 token，够不到真实工作点的 350K token。
+> 本节自己也写着「新旧两套数字不可混比」，这条现在同样适用于第三套口径。
+>
+> ⇒ 性能数字须用 `bash up.sh benchmark` 重测（唯一标准测试，
+> 见 `docs/标准性能测试.md` 与 `docs/拉起包-使用说明.md`）。重测前，下表仅供历史参考。
+
 ### ★ 2026-09-11 新口径复测（按生产实际负载）
 
 上表是 09-10 的旧负载口径（输入均值仅 68,889 字符）。按用户给的生产口径
@@ -138,3 +152,56 @@ S3 命中率 52~70% vs 92~94%）。
   （存活 19 分 26 秒 / 37 分钟，均在低负载、显存充裕时发作，无一致前兆）。
   v4 修的是 dmabuf 驱逐活锁，与 INT8 内核路径是两个子系统，本就不该期待它能修。
   INT8 全系（09/10/11/12/14）目前均不建议投入生产。
+
+---
+
+## 0.5.18 能带来什么（2026-09-17 实测盘点，结论：净收益为负）
+
+用两版镜像的**真实 `--help` 参数面**对比（各 `rc=0`，1716 vs 2364 行），
+外加逐项进镜像核实。0.5.18 净增 18 个参数，**0.5.12 独有集为空**——升级不丢东西，
+本线现传的四个参数（`--speculative-algorithm` / `--speculative-num-steps` /
+`--mamba-scheduler-strategy` / `--attention-backend`）全都还在。
+
+### ★ 一个要纠正的说法：mamba radix cache **不是** 0.5.18 的新东西
+
+曾有说法称「0.5.12 完全没有 mamba radix cache」。**那是错的**，成因是拿
+0.5.18 的标识（`mamba_radix_cache_strategy` / `uses_mamba_radix_cache`）
+去 0.5.12 里搜——参数**改了名**，机制本身一直在：
+
+| | 0.5.12 | 0.5.18 |
+|---|---|---|
+| 实现文件 | `mem_cache/mamba_radix_cache.py` **1294 行 / 74 个 def** | 同名文件 **1427 行 / 79 个 def** |
+| 参数名 | `--mamba-scheduler-strategy` | `--mamba-radix-cache-strategy`（旧名保留为 deprecated） |
+| `auto` 解析 | 硬编码落 `no_buffer`（旁注 `TODO: when extra_buffer is more verified`） | 按架构分档；`Qwen3_5ForConditionalGeneration` 在 `_MAMBA_RADIX_CACHE_ARCHS` 与 `_MAMBA_EXTRA_BUFFER_ARCHS` ⇒ 落 `extra_buffer` |
+| 启用门 | `scheduler.py:812` 的 `hybrid_gdn_config is not None`（本模型是 hybrid GDN，命中） | 架构名表 |
+
+**本线与 01 线本来就显式传 `--mamba-scheduler-strategy extra_buffer`，
+不走 `auto`，因此早已在用。** 且有运行时证据：`~/ab_logs/q38_mamba16_baseline.log`
+的 server_args 转储为 `mamba_scheduler_strategy='extra_buffer'`——那是经过全部
+`_handle_*` 后处理后的**最终值**，即确实挺住并生效，不只是「参数传了」。
+
+> 曾担心投机场景会把它静默改回 `no_buffer`：查实**不会**。两处改写分别在
+> 「策略为 `auto` 时」（我们显式传值，不命中）与 `_handle_pd_disaggregation()`
+> 的 decode 分离分支（我们 `disaggregation_mode='null'`，不命中）。
+
+⇒ 升级在这条上**只换来一个增量版本（+133 行）与更合理的 `auto` 默认**，
+而我们本就不依赖 `auto`。**不构成收益。**
+
+### 逐条盘点
+
+| 项 | 是不是收益 | 依据 |
+|---|---|---|
+| mamba radix cache | **否**，早已在用 | 见上 |
+| `linear_attn_backend` 3→8 个取值 | **否，海市蜃楼** | `flashinfer`/`helion`/`flash_kda`/`flashkda`/`cutedsl` 在两版镜像里**全部没装**，唯一可用仍是 `triton` |
+| GDN 比值 3 融合 | **仅维护性** | +3%(8K)/+2%(32K) 在 0.5.12 上**已经拿到**。差别是实现代价：0.5.12 闸为硬编码 `in [1, 2, 4]`、内核 310 行无 `V_POW2`，需**两个**补丁；0.5.18 原生带 `V_POW2`，只需改白名单一行 |
+| CUDA graph 分相控制（8 个新参数） | **可能**，未验 | 0.5.12 只有合一的 `--cuda-graph-bs`；0.5.18 可只调 decode 侧。⚠ 但本 README 记载的五个杠杆里，「放宽 `--cuda-graph-bs`」当年是被**排除**的（bs 1–8 本就有 graph 覆盖、整条曲线从头就平）——分相能否翻案没有证据 |
+| `--speculative-use-rejection-sampling`、`--speculative-draft-kv-cache-dtype` | **可能**，未验 | 通用投机参数，可能影响 NEXTN 接受率与显存 |
+| 四个 `--speculative-dspark-*` | 否 | DSv4 线的东西，与本模型无关 |
+
+### 结论
+
+**本线天花板在 decode（约 80 tok/s 封顶，五个杠杆已逐一排除），
+而上述没有任何一条被实测证明能突破它。** 叠加该镜像当前**输出为非确定性乱码**
+（16 线八轮实机，详见其 README），**净收益为负**——还要背五个自写补丁。
+
+**⇒ 01 线与 13 线均维持 0.5.12 基版，不升级。** 待镜像修好且有实测收益再议。
