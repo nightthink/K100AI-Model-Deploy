@@ -13,6 +13,34 @@
 import os
 import runpy
 
+# ── 第零层：0.5.20 回输（2026-09-19）────────────────────────────────
+#   海光侧无 0.5.20（harbor 全站搜零命中），整版升级无版本可升，故走回输。
+#   ★ 必须放在**最前**：镜像自带的第三层 q16k 原件会抛
+#     `RuntimeError: TP4-q16 fail-closed: SGLANG_Q38_TP4_Q16_KV_LENGTHS must be
+#     explicit`（已记为故障闸常数第 11 条，基线里本就有），sitecustomize 在那里
+#     中断，排它之后的任何代码都执行不到。回输是平台无关的纯 Python 逻辑、
+#     不依赖前面各层，放最前既绕开该既有断点，又不改变原链路行为。
+#   两条均为平台无关（不碰算子/显存/通信），详见
+#   deploy-kit/patches/sglang-hrrn-backport/README.md
+#     · patch_radix：RadixKey galloping match + offset 游标（上游 #37324）
+#         0.5.12 原生 match 是逐 token Python 循环；40 万 token 全命中
+#         实测 24.1ms → 3.9ms（6×）。对拍 2000 例（含 bigram/ps∈{1,2,64}）零不符。
+#         **默认启用**——纯加速、语义逐位复刻原生。
+#     · patch_hrrn：HRRN 调度策略（上游 #32911，实测 TTFT −69%）
+#         **默认不启用**，需 --schedule-policy hrrn 才生效，便于 A/B 对照。
+try:
+    import patch_radix as _pr
+    print("[backport]", _pr.apply(), flush=True)
+except Exception as _e:                     # 回输失败不得拖垮起服
+    print(f"[backport] radix 回输跳过: {_e!r}", flush=True)
+
+try:
+    import patch_hrrn as _ph
+    print("[backport]", _ph.apply(), flush=True)
+except Exception as _e:
+    print(f"[backport] hrrn 回输跳过: {_e!r}", flush=True)
+
+
 runpy.run_path(
     "/data/qwen38-27b-k100ai-int8-opt/runtime_patch_sglang_gfx928_paged_varlen_repair_v1/repair.py",
     run_name="__repair_parent__",

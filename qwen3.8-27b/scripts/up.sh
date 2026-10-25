@@ -56,6 +56,33 @@ say(){ echo "══ $* ══"; }
 die(){ echo; echo "✗✗ $1"; echo "   下一步：$2"; exit 1; }
 if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo docker"; fi
 PFX="01ma.cli-model-svc-"          # ★ 本流程所有运行时产物的识别前缀
+
+# ── 生命周期合同（R24–R34）的纯逻辑模块 ──────────────────────────
+#   身份规范化、冲突分类、Resume/端口迁移决策全在 common/contract.sh，
+#   它不碰 docker、不读设备前提，故可被 tests/pkg/verify_launch_contract.sh
+#   在无 GPU 机器上直接 source 验证。本处只负责加载与调用，不复制其逻辑。
+#   ★ 不提供任何「跳过驱动/设备检查」的开关——模块可测是因为它本身不依赖那些前提。
+CONTRACT_LOADED=0
+# 新四动作只属于 01/13 的一线一包；共用骨架不能改变其它线的旧入口。
+_contract_line=$(cut -c1-2 "$HERE/.primary" 2>/dev/null || true)
+if [[ "$_contract_line" = 01 || "$_contract_line" = 13 ]] && [ -f "$HERE/common/contract.sh" ]; then
+  . "$HERE/common/contract.sh"
+  [ -f "$HERE/common/lifecycle.sh" ] && . "$HERE/common/lifecycle.sh"
+  CONTRACT_LOADED=1
+fi
+LAUNCH_MODE="docker"              # R25.4-R25.6：只表达执行机制，01/13 均为 docker
+
+# ★ 真实宿主模型路径（R25.1）——必须是宿主 realpath，不得用 MODELS_ROOT 根，
+#   也不得用容器内 /models/target 冒充（那是挂载点，不是身份）。
+#   01/13 线的 serve.sh 均以 `M="$MODELS_ROOT/Qwen3.8-27B-1M"` 定义，从中解析。
+ct_line_model(){
+  local sv="$HERE/$CFGNAME/serve.sh" mr sub
+  [ -f "$sv" ] || { echo ""; return 1; }
+  mr="${MODELS_ROOT:-/data/models}"
+  sub=$(sed -n 's/^M="\$MODELS_ROOT\/\([^"]*\)".*/\1/p' "$sv" | head -1)
+  [ -z "$sub" ] && { echo ""; return 1; }
+  echo "$mr/$sub"
+}
 # ★ 退出码语义（供上层调用者判断）：
 #     0  服务已就绪          1  失败
 #    10  补丁已部署，需重启机器后重跑（内核模块补丁改的是磁盘 .ko，必须重启才生效）
@@ -384,21 +411,75 @@ emit(){   # 码 名 说明 [附加 k=v ...]
 # die 的状态版：打印状态行后退出，码即状态码
 die_st(){ local c="$1" n="$2" m="$3"; shift 3; echo; emit "$c" "$n" "$m" "$@"; exit "$c"; }
 
+# ★ #7：只打印、不落盘的状态输出（emit 会写 .state，state 动作不得使用）
+emit_ro(){ local code="$1" name="$2" msg="$3"; shift 3
+  echo "STATE=$name CODE=$code MSG=$msg${*:+ $*}"; }
+
 do_state(){
-  # 只读地判定当前状态，不产生任何副作用。多实例用 PORT= 指定。
+  # ★ #7 纯无副作用：先读快照（Worker 写的权威事实），再核验容器/HTTP。
+  #   不调用 emit（那会写 .state），不新增/修改/删除任何文件或资源。
   local want="" n="" p=""
   for _a in "$@"; do case "$_a" in PORT=*) want="${_a#PORT=}";; NAME=*) n="${_a#NAME=}";; esac; done
 
-  # ① 主机前提（最先判，因为后面的判断都建立在它之上）
-  command -v docker >/dev/null || { emit $ST_NO_DOCKER NO_DOCKER "没有 docker 命令"; return $ST_NO_DOCKER; }
-  $DOCKER info >/dev/null 2>&1 || { emit $ST_NO_DOCKER NO_DOCKER "docker 不可用（权限或服务未起）"; return $ST_NO_DOCKER; }
+  # ① ★ #7 快照优先（须先于主机前提）：STARTING 且尚无容器时仍须返回 STARTING；
+  #      2026-09-22 真实行为测试查实：原先放在驱动检查之后，无卡机上 state 一律回 NO_DRIVER，
+  #      快照里的 STARTING/FAILED/NEED_REBOOT 全被环境盖掉——快照是 Worker 写的权威事实，
+  #      与本机是否装驱动无关，故必须先读快照。
+  #      FAILED / NEED_REBOOT 直接返回对应终态；READY 才继续核验容器与 HTTP。
+  if [ -n "$want" ] && [ "${CONTRACT_LOADED:-0}" = 1 ]; then
+    local _ss _sl; _ss=$(lc_read_snapshot_field "$want" state 2>/dev/null)
+    _sl=$(lc_read_snapshot_field "$want" launch_id 2>/dev/null)
+    case "$_ss" in
+      STARTING)
+        if ! _by_port "$want" >/dev/null 2>&1; then
+          emit_ro $ST_STARTING STARTING "后台启动中，容器尚未创建（快照事实）" \
+            "PORT=$want" "LAUNCH_ID=$_sl"; return $ST_STARTING
+        fi
+        local _h; _h=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$want/v1/models" 2>/dev/null)
+        [ "$_h" = 200 ] || { emit_ro $ST_STARTING STARTING "后台启动中，接口未就绪" \
+            "PORT=$want" "LAUNCH_ID=$_sl" "HTTP=$_h"; return $ST_STARTING; };;
+      FAILED)
+        emit_ro $ST_START_FAILED START_FAILED "启动失败（快照事实）" \
+          "PORT=$want" "LAUNCH_ID=$_sl"; return $ST_START_FAILED;;
+      NEED_REBOOT)
+        emit_ro $ST_NEED_REBOOT NEED_REBOOT "补丁已部署，等待主机重启（快照事实）" \
+          "PORT=$want" "LAUNCH_ID=$_sl"; return $ST_NEED_REBOOT;;
+      STOPPED)
+        emit_ro $ST_STOPPED STOPPED "该生命周期已停止" \
+          "PORT=$want" "LAUNCH_ID=$_sl"; return $ST_STOPPED;;
+      READY)
+        # READY 快照不自动采信：须容器标签与快照 launch_id 互证（R36），再核 HTTP。
+        # 核验只读标签与接口，不依赖本机驱动，故同样先于主机前提。
+        local _rn _rl _rline _rg _rmid _rh
+        _rn=$(_by_port "$want" 2>/dev/null) || {
+          emit_ro $ST_NOT_FOUND NOT_FOUND "快照为 READY 但容器已不在（R36 互证失败）" \
+            "PORT=$want" "LAUNCH_ID=$_sl"; return $ST_NOT_FOUND; }
+        ct_owned_proof "$_rn" "$want" || {
+          emit_ro $ST_AMBIGUOUS AMBIGUOUS "端口 $want 上的容器归属无法证明，需人工干预（R32）" \
+            "PORT=$want" "HOLDER=$_rn" "REASON=state_unknown_ownership" \
+            "DETAIL=${CT_OWN_WHY:-unknown}"; return $ST_AMBIGUOUS; }
+        _rl="$CT_OWN_LID"
+        _rh=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$want/v1/models" 2>/dev/null)
+        [ "$_rh" = 200 ] || { emit_ro $ST_SERVICE_ERROR SERVICE_ERROR "容器在但接口不可用" \
+            "PORT=$want" "HOLDER=$_rn" "LAUNCH_ID=$_sl" "HTTP=$_rh"; return $ST_SERVICE_ERROR; }
+        _rg=$(ct_ctn_label "$_rn" gpus); _rmid=$(ct_ctn_label "$_rn" model_id)
+        emit_ro $ST_READY READY "服务就绪（快照 + 标签互证 + 接口 200）" \
+          "PORT=$want" "NAME=$_rn" "LAUNCH_ID=$_sl" "GPUS=$_rg" "MODEL_ID=$_rmid" \
+          "LAUNCH_MODE=$(ct_ctn_label "$_rn" launch_mode)" "ENDPOINT=http://127.0.0.1:$want/v1"
+        return $ST_READY;;
+    esac
+  fi
+
+  # ① 主机前提（无快照可依时才回落到环境判定）
+  command -v docker >/dev/null || { emit_ro $ST_NO_DOCKER NO_DOCKER "没有 docker 命令"; return $ST_NO_DOCKER; }
+  $DOCKER info >/dev/null 2>&1 || { emit_ro $ST_NO_DOCKER NO_DOCKER "docker 不可用（权限或服务未起）"; return $ST_NO_DOCKER; }
   { [ -e /dev/kfd ] && [ -d /opt/hyhal ]; } || {
-    emit $ST_NO_DRIVER NO_DRIVER "驱动未安装（缺 /dev/kfd 或 /opt/hyhal）——本包不负责装驱动"
+    emit_ro $ST_NO_DRIVER NO_DRIVER "驱动未安装（缺 /dev/kfd 或 /opt/hyhal）——本包不负责装驱动"
     return $ST_NO_DRIVER; }
 
   # ② 等待重启优先于一切服务状态：未重启时补丁没生效，起来了也不算数
   [ -f "$REBOOT_FLAG" ] && {
-    emit $ST_NEED_REBOOT NEED_REBOOT "补丁已部署，等待主机重启" \
+    emit_ro $ST_NEED_REBOOT NEED_REBOOT "补丁已部署，等待主机重启" \
       "$(grep -h '^REBOOT_REASON=' "$REBOOT_FLAG" 2>/dev/null | head -1)"
     return $ST_NEED_REBOOT; }
 
@@ -408,10 +489,11 @@ do_state(){
   #   压测已结束（进程由 2 降到 1），两个端口却仍都报 BENCH_RUNNING。
   #   按实例查的状态必须按该实例判定，不得用全局信号代答。
 
+
   # ④ 定位实例：给了端口就按端口；没给且有多个实例则判为歧义
   if [ -z "$n" ]; then
     if [ -n "$want" ]; then
-      n=$(_by_port "$want") || { emit $ST_NOT_FOUND NOT_FOUND "端口 $want 上没有本流程的实例" "PORT=$want"
+      n=$(_by_port "$want") || { emit_ro $ST_NOT_FOUND NOT_FOUND "端口 $want 上没有本流程的实例" "PORT=$want"
                                  return $ST_NOT_FOUND; }
     else
       # ★ 歧义判定只数**在跑**的实例。用 ps -a 会把早已退出的旧容器算进来，
@@ -420,10 +502,10 @@ do_state(){
       local all cnt; all=$($DOCKER ps --format '{{.Names}}' --filter "name=$PFX" 2>/dev/null)
       cnt=$(printf '%s\n' "$all" | grep -c . || true)
       if [ "$cnt" = 0 ]; then
-        emit $ST_STOPPED STOPPED "无实例，服务已停止"
+        emit_ro $ST_STOPPED STOPPED "无实例，服务已停止"
         return $ST_STOPPED
       elif [ "$cnt" -gt 1 ]; then
-        emit $ST_AMBIGUOUS AMBIGUOUS "同机有 $cnt 个实例，须用 PORT= 指定要看哪一个" \
+        emit_ro $ST_AMBIGUOUS AMBIGUOUS "同机有 $cnt 个实例，须用 PORT= 指定要看哪一个" \
           "INSTANCES=$(printf '%s' "$all" | tr '\n' ',')"
         return $ST_AMBIGUOUS
       fi
@@ -437,7 +519,7 @@ do_state(){
   local run; run=$($DOCKER inspect "$n" --format '{{.State.Running}}' 2>/dev/null)
   if [ "$run" != true ]; then
     local ec; ec=$($DOCKER inspect "$n" --format '{{.State.ExitCode}}' 2>/dev/null)
-    emit $ST_STOPPED STOPPED "实例已停止" "NAME=$n" "PORT=${p:-?}" "EXIT_CODE=${ec:-?}"
+    emit_ro $ST_STOPPED STOPPED "实例已停止" "NAME=$n" "PORT=${p:-?}" "EXIT_CODE=${ec:-?}"
     return $ST_STOPPED
   fi
 
@@ -450,7 +532,7 @@ do_state(){
   echo "$lg" | grep -qE '" 5[0-9]{2}'        && { bad=1; sym="$sym 5xx"; }
 
   if [ "$http" = 200 ]; then
-    [ "$bad" = 1 ] && { emit $ST_SERVICE_ERROR SERVICE_ERROR "服务异常，表现为:$sym" \
+    [ "$bad" = 1 ] && { emit_ro $ST_SERVICE_ERROR SERVICE_ERROR "服务异常，表现为:$sym" \
                           "NAME=$n" "PORT=$p" "HTTP=200"; return $ST_SERVICE_ERROR; }
     # ⑥·5 压测判定：只认**打在本实例端口上**的 benchmark 进程（R13.6）
     local _bp _bpid=""
@@ -459,22 +541,22 @@ do_state(){
         | grep -qE -- "--port[= ]$p( |$)" && { _bpid="$_bp"; break; }
     done
     if [ -n "$_bpid" ]; then
-      emit $ST_BENCH_RUNNING BENCH_RUNNING "正在 benchmark，仍未结束" \
+      emit_ro $ST_BENCH_RUNNING BENCH_RUNNING "正在 benchmark，仍未结束" \
         "NAME=$n" "PORT=$p" "BENCH_PID=$_bpid"
       return $ST_BENCH_RUNNING
     fi
     local g; g=$($DOCKER inspect "$n" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
                  | grep -oP 'HIP_VISIBLE_DEVICES=\K.*' | head -1)
-    emit $ST_READY READY "服务正常，等待命令中" "NAME=$n" "PORT=$p" "GPUS=${g:-?}" \
+    emit_ro $ST_READY READY "服务正常，等待命令中" "NAME=$n" "PORT=$p" "GPUS=${g:-?}" \
       "UPTIME=$($DOCKER inspect "$n" --format '{{.State.StartedAt}}' 2>/dev/null)"
     return $ST_READY
   fi
 
   if [ "$bad" = 1 ]; then
-    emit $ST_STARTING_BAD STARTING_BAD "正在拉起但状态异常:$sym" "NAME=$n" "PORT=$p" "HTTP=$http"
+    emit_ro $ST_STARTING_BAD STARTING_BAD "正在拉起但状态异常:$sym" "NAME=$n" "PORT=$p" "HTTP=$http"
     return $ST_STARTING_BAD
   fi
-  emit $ST_STARTING STARTING "正在拉起，状态正常，仍在等待就绪" "NAME=$n" "PORT=$p" "HTTP=$http" \
+  emit_ro $ST_STARTING STARTING "正在拉起，状态正常，仍在等待就绪" "NAME=$n" "PORT=$p" "HTTP=$http" \
     "LAST_LOG=$(echo "$lg" | tail -1 | cut -c1-80)"
   return $ST_STARTING
 }
@@ -599,7 +681,11 @@ s1(){
     echo "  · 已停用旧单元 acs-clear.service（由 ${PFX}acs-clear.service 接管）"
   fi
   $SUDO systemctl daemon-reload && $SUDO systemctl enable "${PFX}acs-clear.service" >/dev/null 2>&1
-  EXPECT_GPUS="$NGPU" $SUDO -E bash "/usr/local/sbin/${PFX}machine_prep.sh" --now | sed 's/^/  /'
+  if [ -n "$SUDO" ]; then
+    EXPECT_GPUS="$NGPU" "$SUDO" -E bash "/usr/local/sbin/${PFX}machine_prep.sh" --now | sed 's/^/  /'
+  else
+    EXPECT_GPUS="$NGPU" bash "/usr/local/sbin/${PFX}machine_prep.sh" --now | sed 's/^/  /'
+  fi
 }
 
 smoke(){
@@ -642,6 +728,307 @@ menu(){
   do_status || true
 }
 
+# ════════════════════════════════════════════════════════════════
+# ★ 位置要紧（2026-09-22 真实行为测试查实）：以下函数**必须定义在参数分发之前**。
+#   原先它们写在分发块之下的同步主流程里，而一线一包分发在命中分支后即 exit ——
+#   `up.sh start` 跑到调用点时函数尚未定义，报 `contract_resolve: command not found`(127)。
+#   源码 grep 看不出这个缺陷，只有真跑 start 才暴露。
+# ════════════════════════════════════════════════════════════════
+# ════ #9 归属安全的 stop ════
+#   按 PORT= 或 LAUNCH_ID= 解析快照，只停「标签 + 快照互证」属本包的容器。
+#   遇同名/同端口未知资源一律失败关闭，绝不按名称前缀全删。
+do_stop_safe(){
+  local want="" wlid=""
+  for _a in "$@"; do case "$_a" in PORT=*) want="${_a#PORT=}";; LAUNCH_ID=*) wlid="${_a#LAUNCH_ID=}";; esac; done
+  [ "${CONTRACT_LOADED:-0}" = 1 ] || { do_stop "$NUM" "$@"; return 0; }
+  local line pkg; line="$(echo "$CFGNAME" | cut -c1-2)"; pkg="$(awk '{print $2}' "$HERE/VERSION" 2>/dev/null)"
+  local ports="" p n lid iid stopped=0
+  if [ -n "$want" ]; then ports="$want"
+  elif [ -n "$wlid" ]; then
+    for f in "$(lc_dir)"/snapshot-*.json; do [ -f "$f" ] || continue
+      [ "$(sed -n 's/.*"launch_id":"\([^"]*\)".*/\1/p' "$f"|head -1)" = "$wlid" ] && \
+        ports="$ports $(sed -n 's/.*"port":"\([^"]*\)".*/\1/p' "$f"|head -1)"; done
+  else
+    # 全停：只处理本包 state 目录中可证明的 launch，不碰其它资源
+    for f in "$(lc_dir)"/snapshot-*.json; do [ -f "$f" ] || continue
+      ports="$ports $(sed -n 's/.*"port":"\([^"]*\)".*/\1/p' "$f"|head -1)"; done
+  fi
+  for p in $ports; do
+    [ -z "$p" ] && continue
+    n=$(_by_port "$p" 2>/dev/null || true)
+    # ★ 与复用/核验/清理同一把尺子：publisher+package_id+line+快照 launch_id 全等才停。
+    if [ -n "$n" ] && ! ct_owned_proof "$n" "$p"; then
+      emit $ST_AMBIGUOUS AMBIGUOUS "端口 $p 上的资源归属无法证明，拒绝停止，需人工干预（R32）" \
+        "HOLDER=$n" "PORT=$p" "REASON=stop_unknown_ownership" "DETAIL=${CT_OWN_WHY:-unknown}"
+      return $ST_AMBIGUOUS
+    fi
+    lid=$(lc_read_snapshot_field "$p" launch_id 2>/dev/null)
+    if [ -n "$lid" ] && ! lc_stop_worker "$lid" "$(lc_read_snapshot_field "$p" state 2>/dev/null)"; then
+      emit $ST_AMBIGUOUS AMBIGUOUS "无法证明后台启动链已安全停止，需人工干预" \
+        "PORT=$p" "LAUNCH_ID=$lid" "REASON=${LC_STOP_REASON:-worker_stop_unproved}"
+      return $ST_AMBIGUOUS
+    fi
+    # Worker 停止之前可能刚创建容器；终止启动链后重新发现、互证，再定点删除。
+    n=$(_by_port "$p" 2>/dev/null || true)
+    if [ -n "$n" ]; then
+      if ! ct_owned_proof "$n" "$p"; then
+        emit $ST_AMBIGUOUS AMBIGUOUS "停止期间出现归属不明的资源，拒绝删除" \
+          "HOLDER=$n" "PORT=$p" "DETAIL=${CT_OWN_WHY:-unknown}"
+        return $ST_AMBIGUOUS
+      fi
+      if ! $DOCKER rm -f "$n" >/dev/null 2>&1; then
+        emit $ST_FAILED FAILED "容器停止失败，不能回报 STOPPED" "HOLDER=$n" "PORT=$p"
+        return $ST_FAILED
+      fi
+      echo "  已停（归属已互证）: $n"; stopped=$((stopped+1))
+    fi
+    if [ -n "$lid" ]; then
+      iid=$(lc_new_id)
+      LC_GPUS=$(lc_read_snapshot_field "$p" GPUS 2>/dev/null)
+      LC_MODE=docker LC_LINE="$line"
+      lc_write_snapshot "$p" "$lid" "$iid" STOPPED "$ST_STOPPED" stopped "GPUS=$LC_GPUS"
+      lc_emit_event "$lid" "$iid" "$p" STOPPED "$ST_STOPPED" stopped
+    fi
+  done
+  emit $ST_STOPPED STOPPED "已停止经互证的实例" "STOPPED=$stopped"
+  return $ST_STOPPED
+}
+
+# ════ 合同判定（R26–R28）——进程内函数，start 直接调用，不递归起子进程 ════
+#   返回 0 = 可继续新建生命周期；非 0 = 已回报状态并应由调用方退出。
+#   ★ 修（递归 __decide）：原实现 start 调 `bash up.sh __decide`，子进程走完整同步
+#     主流程（precheck/S1/launch/S7/S8/smoke），start 因此仍然阻塞。改为函数后，
+#     同步段只做「发现实例 + 归属核验 + 决策」，绝不触碰任何同步链步骤。
+ct_model_id(){ # 宿主 realpath → 稳定非敏感摘要（R25.1 / 修 #5：路径原文不得外泄）
+  local rp; rp=$(ct_norm_model "${1:-}")
+  printf '%s' "$rp" | sha256sum | cut -c1-16
+}
+ct_ctn_label(){ $DOCKER inspect "$1" --format "{{index .Config.Labels \"$2\"}}" 2>/dev/null | grep -v '^<no value>$'; }
+
+# ════ 唯一的归属证明（R36）——复用 / 核验 / 停止 / 清理 四类入口统一走它 ════
+#   $1=容器名 $2=期望端口（可空）→ 0 = 已证明属本包；非 0 = 未知归属（调用方失败关闭）
+#   四项**全部**精确相等才算证明，任何一项缺失或不符都判未知：
+#     publisher   == 01ma                     （发布方）
+#     package_id  == 本包 VERSION 的版本       （必须存在；**缺失不视为允许**）
+#     line        == 本包线号                 （线级隔离）
+#     launch_id   == **该容器自己端口**快照的 launch_id（本次生命周期；无快照即未知）
+#
+#   ★ 事实源必须是「容器自己的端口」，不是本次要起的目标端口（2026-09-22 修）：
+#     端口迁移时旧实例在旧端口上，它的快照自然写在 snapshot-<旧端口>.json；
+#     若拿尚未创建的新目标端口快照去证明旧实例，必然 no_snapshot ⇒ 旧实例被误判未知，
+#     R28 的自动定点停旧就退化成人工处置。旧端口从**稳定标签 port** 读，不从命令行猜。
+#     $2 非空时额外要求「标签 port == $2」，供 state/stop 这类按端口定位的调用方自校验。
+#   失败原因写入 CT_OWN_WHY，证明通过时 CT_OWN_LID/CT_OWN_PORT 给出 launch_id 与其端口。
+CT_OWN_PUBLISHER=01ma
+ct_owned_proof(){
+  local c="$1" want="${2:-}"
+  local pub pkgid cline clid slid port
+  local line pkg; line="$(echo "$CFGNAME" | cut -c1-2)"; pkg="$(awk '{print $2}' "$HERE/VERSION" 2>/dev/null)"
+  CT_OWN_WHY=""; CT_OWN_LID=""; CT_OWN_PORT=""
+  pub=$(ct_ctn_label "$c" publisher)
+  [ -n "$pub" ]   || { CT_OWN_WHY=missing_publisher;     return 1; }
+  [ "$pub" = "$CT_OWN_PUBLISHER" ] || { CT_OWN_WHY=publisher_mismatch; return 1; }
+  pkgid=$(ct_ctn_label "$c" package_id)
+  [ -n "$pkgid" ] || { CT_OWN_WHY=missing_package_id;    return 1; }
+  [ -n "$pkg" ]   || { CT_OWN_WHY=missing_local_version; return 1; }
+  [ "$pkgid" = "$pkg" ] || { CT_OWN_WHY=package_id_mismatch; return 1; }
+  cline=$(ct_ctn_label "$c" line)
+  [ -n "$cline" ] || { CT_OWN_WHY=missing_line;          return 1; }
+  [ "$cline" = "$line" ] || { CT_OWN_WHY=line_mismatch;  return 1; }
+  clid=$(ct_ctn_label "$c" launch_id)
+  [ -n "$clid" ] || { CT_OWN_WHY=missing_launch_id;      return 1; }
+  port=$(ct_ctn_label "$c" port)                        # 稳定标签，不从 Cmd 猜
+  [ -n "$port" ] || { CT_OWN_WHY=missing_port_label;     return 1; }
+  [ -z "$want" ] || [ "$port" = "$want" ] || { CT_OWN_WHY=port_mismatch; return 1; }
+  slid=$(lc_read_snapshot_field "$port" launch_id 2>/dev/null)
+  [ -n "$slid" ] || { CT_OWN_WHY=no_snapshot;            return 1; }
+  [ "$clid" = "$slid" ] || { CT_OWN_WHY=launch_id_mismatch; return 1; }
+  CT_OWN_LID="$clid"; CT_OWN_PORT="$port"
+  return 0
+}
+
+# 目标端口是否被**任意**容器占用（不限本包名字前缀）
+#   ★ 不能用 _by_port：它只扫 name=$PFX 的容器，看不见别人的容器。
+#     换端口时若新端口被外来容器占着而漏判，就会先把旧实例停掉、再在下一轮迭代里
+#     报 AMBIGUOUS —— 服务没了、也没起来。故此处按端口做全量扫描，与循环顺序无关。
+ct_port_taken_by_ctn(){
+  local want="$1" skip="${2:-}" n p
+  # ★ 只扫**运行中**容器（2026-09-23 验证机B 实机查实）：已退出容器的历史 --port
+  #   声明不占用任何端口，把它算作占用会让换端口永远 PORT_BUSY。宿主监听另行检查。
+  for n in $($DOCKER ps --format '{{.Names}}' 2>/dev/null); do
+    [ -n "$skip" ] && [ "$n" = "$skip" ] && continue
+    p=$(ct_ctn_label "$n" port)
+    [ -z "$p" ] && p=$($DOCKER inspect "$n" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -oE '\-\-port [0-9]+' | grep -oE '[0-9]+$')
+    [ -n "$p" ] && [ "$p" = "$want" ] && { echo "$n"; return 0; }
+  done
+  return 1
+}
+
+# 目标端口是否被宿主进程占用（修 #6：不能只看 docker）
+ct_host_port_busy(){
+  local p="$1"
+  (command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -qE "[:.]$p[[:space:]]") && return 0
+  (command -v netstat >/dev/null && netstat -ltn 2>/dev/null | grep -qE "[:.]$p[[:space:]]") && return 0
+  return 1
+}
+
+contract_resolve(){ # $1=port $2=gpus  → 0 可继续新建；非 0 = 已回报，调用方按 $CT_EXIT 退出
+  # ★ 不能用返回值兼表状态码（2026-09-22 真实行为测试查实）：ST_READY=0，
+  #   REUSE 分支 `CT_EXIT=$ST_READY; return 99` 与「可继续」同为 0，start 因此在复用后又派发了 Worker。
+  #   故终态一律置 CT_EXIT 后 return 99，调用方 `|| exit $CT_EXIT`。
+  CT_EXIT=0
+  [ "${CONTRACT_LOADED:-0}" = 1 ] || return 0
+  local port="$1" gpus="$2"
+  local mydir; mydir="$(ct_line_model)"
+  local mymid; mymid=$(ct_model_id "$mydir")
+  local myg;   myg=$(ct_norm_gpus "$gpus")
+  local line; line="$(echo "$CFGNAME" | cut -c1-2)"
+  local pkg;  pkg="$(awk '{print $2}' "$HERE/VERSION" 2>/dev/null)"
+  local c lb cmid cg cp cmode clid cline cpkg rel own relevant crun
+
+  # ── ① 目标端口快照前置（2026-09-23 实机查实的缺陷 4）────────────────────
+  #   Worker 在 precheck/S1/补丁阶段还没建容器（实测约 4 秒窗口）。原实现只遍历容器，
+  #   这期间重复 start 会给同一端口再派一个 Worker，两个生命周期抢同一组卡。
+  #   故先看快照：STARTING 且该 launch_id 仍活（Worker 进程或容器在）⇒ 挂接原 launch_id。
+  local _ssn _sln
+  _ssn=$(lc_read_snapshot_field "$port" state 2>/dev/null)
+  _sln=$(lc_read_snapshot_field "$port" launch_id 2>/dev/null)
+  if [ "$_ssn" = STARTING ] && [ -n "$_sln" ]; then
+    # 只有「同一组卡」才谈得上是同一个生命周期（R25.2），不同卡组不得误挂接
+    local _sgp; _sgp=$(ct_norm_gpus "$(lc_read_snapshot_field "$port" GPUS 2>/dev/null)")
+    # ★ 卡组不同 ⇒ 不是同一个生命周期，但**更不能另起一个**（2026-09-23 实机查实的缺陷 5）：
+    #   原实现在这里直接放行，于是第二次 start 用别的卡组在同一端口又派了一个 Worker，
+    #   并把 8101 的快照覆盖成自己的 launch_id。后果是第一个还在跑的生命周期账本被毁：
+    #   state 报 START_FAILED，stop 报 launch_id_mismatch —— 包再也停不掉自己起的服务。
+    if [ -n "$_sgp" ] && [ "$_sgp" != "$myg" ] && lc_worker_alive "$_sln" "$HERE/up.sh"; then
+      emit $ST_PORT_BUSY PORT_BUSY "端口 $port 已被本包另一个正在拉起的生命周期占用（卡组 $_sgp）" \
+        "PORT=$port" "LAUNCH_ID=$_sln" "WANT_GPUS=$myg" "HAVE_GPUS=$_sgp" "REASON=port_held_by_other_launch"
+      CT_EXIT=$ST_PORT_BUSY; return 99
+    fi
+    if [ -z "$_sgp" ] || [ "$_sgp" = "$myg" ]; then
+      # 证明该 launch_id 的 Worker 确实活着：PID 存活 **且** /proc cmdline 精确属于本包 __worker
+      if lc_worker_alive "$_sln" "$HERE/up.sh"; then
+        emit $ST_STARTING STARTING "该端口已有生命周期在拉起，挂接原 launch_id（R27/R29）" \
+          "PORT=$port" "LAUNCH_ID=$_sln" "GPUS=$myg" "REASON=starting_worker_alive"
+        CT_EXIT=$ST_STARTING; return 99
+      fi
+      # 没有活 Worker 但容器已建起来：交给下面的容器遍历去判（ATTACH/RECREATE）
+      [ -n "$(_by_port "$port" 2>/dev/null)" ] || \
+        echo "  · 快照 STARTING 但 Worker 已不在（PID/cmdline 核验未过）且无容器 ⇒ 视为夭折，新建生命周期"
+    fi
+  fi
+
+  # ── ② 目标端口被**未知 running 容器**占用 ⇒ 恒 PORT_BUSY（缺陷 3：不能靠枚举顺序）──
+  local _tk; _tk=$(ct_port_taken_by_ctn "$port" 2>/dev/null || true)
+  if [ -n "$_tk" ] && ! ct_owned_proof "$_tk" "$port"; then
+    emit $ST_PORT_BUSY PORT_BUSY "目标端口 $port 被归属不明的运行中容器占用（R26 情形 5 / R32）" \
+      "PORT=$port" "HOLDER=$_tk" "REASON=port_taken_unknown" "DETAIL=${CT_OWN_WHY:-unknown}"
+    CT_EXIT=$ST_PORT_BUSY; return 99
+  fi
+
+  for c in $($DOCKER ps -a --format '{{.Names}}' 2>/dev/null); do
+    # ── 从标签读身份（修 #5：不拿容器内 /models/target 与宿主 realpath 比）──
+    cmid=$(ct_ctn_label "$c" model_id)
+    cg=$(ct_ctn_label "$c" gpus);   [ -z "$cg" ] && cg=$($DOCKER inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^HIP_VISIBLE_DEVICES=//p' | head -1)
+    cp=$(ct_ctn_label "$c" port);   [ -z "$cp" ] && cp=$($DOCKER inspect "$c" --format '{{join .Config.Cmd " "}}' 2>/dev/null | grep -oE '\-\-port [0-9]+' | grep -oE '[0-9]+$')
+    cmode=$(ct_ctn_label "$c" launch_mode); [ -z "$cmode" ] && cmode=docker   # 读既有标签，不硬编码本次 mode
+    clid=$(ct_ctn_label "$c" launch_id)
+    cline=$(ct_ctn_label "$c" line); cpkg=$(ct_ctn_label "$c" package_id)
+    cg=$(ct_norm_gpus "$cg")
+    crun=$($DOCKER inspect "$c" --format '{{.State.Running}}' 2>/dev/null)
+
+    # ── 相关性（修 #6）：只有占目标端口、或 GPU 相交，才算与本次相关 ──
+    rel=$(ct_gpu_relation "$myg" "${cg:-}")
+    relevant=no
+    [ -n "$cp" ] && [ "$cp" = "$port" ] && relevant=yes
+    [ -n "$cg" ] && [ "$rel" != disjoint ] && relevant=yes
+    [ "$relevant" = no ] && continue          # 无关容器不阻断
+
+    # ── 未知归属 + 已退出 ⇒ 不构成现实占用，不阻断也不清理（2026-09-23 实机查实）──
+    #   验证机B 上三个 6-8 天前 exited 的容器声明 HIP_VISIBLE_DEVICES=0..7，
+    #   与任何卡组都相交，于是本包在该机上**任何 GPU 组合都起不来**。
+    #   已退出的容器既不占卡也不占端口：R38.1 说的「实际相关」要的是现实占用事实，
+    #   不是历史声明。故此处先判运行状态——但顺序要紧：**先证归属再看运行状态**，
+    #   否则本包自己 FAILED 的已退出残留也会被跳过，R27 的 RECREATE 就失效了。
+    #   同名未知 exited 容器若最终造成 docker 名字冲突，安全失败即可，不自动删除。
+
+    # ── 归属：唯一证明（publisher+package_id+line+容器自身端口快照 launch_id 全等）──
+    #   ★ 收紧（2026-09-22）：原实现把 package_id 缺失当作「可以接受」，也不看 publisher，
+    #     于是别的发布方、别的版本、甚至没打标签的容器都可能被当成本包资源去复用或删除。
+    #     现在一项不符即未知归属，失败关闭：不复用、不清理、不派发 Worker。
+    own=unknown
+    ct_owned_proof "$c" && own=own      # ★ 按容器自己的端口快照互证（端口迁移的旧实例在旧端口上）
+    if [ "$own" != own ]; then
+      # 未知归属：只有**正在运行**才是现实冲突；已退出的一律跳过，不阻断不清理。
+      if [ "$crun" != true ]; then
+        echo "  · 跳过已退出的未知容器 $c（历史声明 GPUS=[${cg:-无}] PORT=[${cp:-无}] 不构成当前占用）"
+        continue
+      fi
+      emit $ST_AMBIGUOUS AMBIGUOUS "相关资源归属无法证明，需人工干预（R26 情形 5 / R32）" \
+        "HOLDER=$c" "PORT=${cp:-?}" "REASON=unknown_ownership" "DETAIL=${CT_OWN_WHY:-unknown}"
+      CT_EXIT=$ST_AMBIGUOUS; return 99
+    fi
+
+    # ── 本包资源：读快照状态，但**必须用现实核实**（2026-09-23 实机查实的缺陷 2）──
+    #   原实现直接采信快照：容器被 kill 后快照仍是 READY，start 就回「已就绪，复用」，
+    #   调用方以为服务在跑，实际是死的，也不会触发任何恢复。
+    #   R27 的 REUSE 前提是「该实例确实在服务」，不是「快照曾经写过 READY」。
+    local st; st=$(lc_read_snapshot_field "${cp:-$port}" state 2>/dev/null)
+    [ -z "$st" ] && { [ "$crun" = true ] && st=STARTING || st=FAILED; }
+    if [ "$st" = READY ]; then
+      if [ "$crun" != true ]; then
+        echo "  · 快照为 READY 但容器已不在运行（现实核实）⇒ 按 FAILED 处理"; st=FAILED
+      else
+        local _hc; _hc=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${cp:-$port}/v1/models" 2>/dev/null)
+        [ "$_hc" = 200 ] || { echo "  · 快照为 READY 但接口不可用（HTTP=$_hc）⇒ 按 FAILED 处理"; st=FAILED; }
+      fi
+    elif [ "$st" = STARTING ] && [ "$crun" != true ]; then
+      # 快照 STARTING、容器已退出：Worker 半途死了，属残留，不能一直挂着
+      if ! pgrep -f "up[.]sh __worker $(lc_read_snapshot_field "${cp:-$port}" launch_id 2>/dev/null)" >/dev/null 2>&1; then
+        echo "  · 快照为 STARTING 但容器已退出且无 Worker（现实核实）⇒ 按 FAILED 处理"; st=FAILED
+      fi
+    fi
+    local ME EX dec act why
+    ME=$(ct_identity "$mymid" "$myg" docker "$port")
+    EX=$(ct_identity "${cmid:-none}" "$cg" "$cmode" "${cp:-0}")
+    dec=$(ct_decide "$ME" "$EX" "$st" own); act=${dec%% *}; why=${dec#* }
+    case "$act" in
+      REUSE)  emit $ST_READY READY "同身份实例已就绪，复用（R27）" \
+                "NAME=$c" "PORT=$port" "LAUNCH_ID=$clid" "REASON=$why"; CT_EXIT=$ST_READY; return 99;;
+      ATTACH) emit $ST_STARTING STARTING "同身份实例正在拉起，挂接原 launch_id（R27）" \
+                "NAME=$c" "PORT=$port" "LAUNCH_ID=$clid" "REASON=$why"; CT_EXIT=$ST_STARTING; return 99;;
+      RECREATE)
+              echo "  · FAILED 残留经标签+快照互证属本包，清理后新建 launch_id（R27）"
+              $DOCKER rm -f "$c" >/dev/null 2>&1 || true;;
+      MIGRATE_PORT)
+              # ★ 两步，次序不能颠倒（R28.1）：
+              #   第一步（上方）旧实例已按**它自己的端口**快照互证属本包；
+              #   第二步在此独立体检**新目标端口**：任意容器占用、或宿主进程监听，
+              #   两者只要有一个成立就失败关闭，**绝不停掉旧实例**——
+              #   否则旧服务没了、新端口又起不来，等于把可用服务换成不可用。
+              local _occ; _occ=$(ct_port_taken_by_ctn "$port" "$c" 2>/dev/null || true)
+              if [ -n "$_occ" ] || ct_host_port_busy "$port"; then
+                emit $ST_PORT_BUSY PORT_BUSY "换端口：新端口 $port 不可用，不停旧服务（R28.1）" \
+                  "PORT=$port" "OLD=$c" "HOLDER=${_occ:-host_listener}" "REASON=$why"
+                CT_EXIT=$ST_PORT_BUSY; return 99
+              fi
+              echo "  · 换端口（R28）：新端口 $port 两项体检均空闲，定点停旧 $c（launch_id=$CT_OWN_LID，旧端口 $CT_OWN_PORT）"
+              $DOCKER rm -f "$c" >/dev/null 2>&1 || true;;
+      FAIL)   local code=$ST_GPU_BUSY
+              case "$why" in unknown_ownership) code=$ST_AMBIGUOUS;; esac
+              emit $code "$(case $code in $ST_AMBIGUOUS) echo AMBIGUOUS;; *) echo GPU_BUSY;; esac)" \
+                "合同判定失败（R26）" "HOLDER=$c" "REASON=$why"; CT_EXIT=$code; return 99;;
+    esac
+  done
+
+  # 目标端口的宿主监听事实（修 #6）
+  if ct_host_port_busy "$port"; then
+    emit $ST_PORT_BUSY PORT_BUSY "目标端口 $port 已被宿主进程监听，归属无法证明（R32）" \
+      "PORT=$port" "REASON=host_port_busy"; CT_EXIT=$ST_PORT_BUSY; return 99
+  fi
+  return 0
+}
+
 # ── 参数分发 ──
 if [ -f "$HERE/.primary" ]; then
   # ★ 一线一包模式：本包只服务 .primary 指定的配置
@@ -649,17 +1036,75 @@ if [ -f "$HERE/.primary" ]; then
   NUM=$(echo "$CFGNAME" | cut -c1-2)
   # 容忍多余的编号前缀参数（up.sh 09 status 等价于 up.sh status）
   [ "${1:-}" = "$NUM" -o "${1:-}" = "$CFGNAME" ] && shift
-  case "${1:-up}" in
+  _action="${1:-up}"
+  case "$_action" in *=*) [ "$CONTRACT_LOADED" = 1 ] && _action=start;; esac
+  if [ "$CONTRACT_LOADED" != 1 ] && [[ "$_action" = start || "$_action" = up || "$_action" = menu ]]; then
+    # 其余线继续执行原同步主流程，不派发 Worker，也不创建新合同快照。
+    [ $# -eq 0 ] || shift
+    _action=""
+  fi
+  case "$_action" in
     status) shift; do_status "$NUM" "$@"; exit 0;;
-    stop)   shift; do_stop "$NUM" "$@"; exit 0;;
+    stop)   shift; do_stop_safe "$@"; exit $?;;
     restart) shift; do_restart "$@"; exit 0;;
     # ★ logs/benchmark 必须同样 exit —— 少一个 exit 0 就会掉进下方拉起主流程，
     #   带着 PORT= 去做「幂等预清」，把该端口上的实例删掉再重拉。
     #   2026-09-17 实机验收就栽在这里：一个缺失的 exit 0 连锁导致 5 项失败。
-    logs)   shift; do_logs "$@"; exit 0;;
+    # logs) 已由下方支持 LAUNCH_ID= 的分支接管（case 先匹配先命中，旧分支须删）
     state)  shift; do_state "$@"; exit $?;;        # ★ 纯机器可读状态，无副作用
     benchmark|bench) shift; do_benchmark "$@"; exit $?;;
-    up|menu) set --;;                     # 无参/up → 拉起（KEY=VAL 参数自然透传）
+    # ── R24.1 四动作之 start：同步判定 + 快速返回（R29）──
+    #   ★ 同步段**只做**规范化与判定，绝不执行 precheck/S1/deploy_patches/launch/S7/S8/smoke。
+    start|up|menu)
+      if [[ "${1:-}" = start || "${1:-}" = up || "${1:-}" = menu ]]; then shift; fi
+      _iid=$(lc_new_id); _sp=""; _sg=""
+      for _a in "$@"; do case "$_a" in PORT=*) _sp="${_a#PORT=}";; GPUS=*) _sg="${_a#GPUS=}";; esac; done
+      _sp="${_sp:-$(cfg_port "$CFGNAME")}"
+      _sg="${_sg:-$(meta "$HERE/$CFGNAME" gpus)}"
+      export LC_GPUS="$_sg" LC_MODE=docker LC_LINE="${CFGNAME:0:2}"
+      contract_resolve "$_sp" "$_sg" || exit ${CT_EXIT:-1}      # REUSE/ATTACH/FAIL 已回报并退出
+      _lid=$(lc_new_id)
+      # ★ 兜底（缺陷 5）：绝不覆盖一个**仍然活着**的生命周期的账本。
+      #   快照是 stop/state 唯一的归属依据，被覆盖就等于把还在跑的服务变成无主资源。
+      _pv=$(lc_read_snapshot_field "$_sp" launch_id 2>/dev/null)
+      _pvs=$(lc_read_snapshot_field "$_sp" state 2>/dev/null)
+      if [ -n "$_pv" ] && [ "$_pvs" = STARTING ] && lc_worker_alive "$_pv" "$HERE/up.sh"; then
+        emit $ST_PORT_BUSY PORT_BUSY "端口 $_sp 上已有存活的生命周期，拒绝覆盖其账本" \
+          "PORT=$_sp" "LAUNCH_ID=$_pv" "REASON=refuse_clobber_live_snapshot"
+        exit $ST_PORT_BUSY
+      fi
+      lc_write_snapshot "$_sp" "$_lid" "$_iid" STARTING 20 start_dispatched "GPUS=$_sg"
+      lc_emit_event "$_lid" "$_iid" "$_sp" STARTING 20 start_dispatched
+      mkdir -p "$HERE/logs" 2>/dev/null || true
+      WORKER_LOG="$HERE/logs/worker-$_lid.log"
+      LAUNCH_ID="$_lid" WORKER_LOG="$WORKER_LOG" LC_STATE_DIR="${LC_STATE_DIR:-}" \
+        setsid nohup bash "$HERE/up.sh" __worker "$_lid" "$_iid" "$_sp" "$_sg" "$@" \
+        >>"$WORKER_LOG" 2>&1 </dev/null &
+      lc_write_pid "$_lid" "$!"          # ★ 在 start 返回**之前**落盘，紧随其后的第二次 start 才挂得上
+      emit $ST_STARTING STARTING "已触发后台启动，不等待就绪（R29）" \
+        "PORT=$_sp" "GPUS=$_sg" "LAUNCH_ID=$_lid" "INVOCATION_ID=$_iid"
+      exit $ST_STARTING;;
+    # ── 隐藏入口：Worker 包装（非公开合同）──
+    __worker) shift
+      _wl="$1"; _wi="$2"; _wp="$3"; _wg="$4"; shift 4
+      lc_write_pid "$_wl" "$$"                              # setsid 之后的真实 Worker PID，覆盖父进程记的那个
+      trap 'lc_clear_pid "$_wl" "$$"' EXIT                  # 只清与自身 PID 一致的记录
+      lc_worker_run "$CFGNAME" "$_wp" "$_wl" "$_wi" "$_wg" "$@"; exit $?;;
+    # ── 隐藏入口：完整同步链（precheck→S1→patch→launch(S2-S8)→smoke）──
+    #   只有 Worker 会调它。落入下方主流程。
+    __run) shift;;
+    # ── R30.4 logs 按 launch_id ──
+    logs) shift
+      _ll=""
+      for _a in "$@"; do case "$_a" in LAUNCH_ID=*) _ll="${_a#LAUNCH_ID=}";; esac; done
+      if [ -n "$_ll" ]; then
+        _j=$(lc_jsonl "$_ll"); _w="$HERE/logs/worker-$_ll.log"; _got=0
+        [ -f "$_j" ] && { echo "── JSONL 事件（launch_id=$_ll）──"; cat "$_j"; _got=1; }
+        [ -f "$_w" ] && { echo "── Worker 原始日志 ──"; cat "$_w"; _got=1; }
+        [ "$_got" = 1 ] || { echo "✗ 无该 launch_id 的日志: $_ll"; exit $ST_NOT_FOUND; }
+        exit 0
+      fi
+      do_logs "$@"; exit 0;;
   esac
 else
   ACT="${1:-menu}"
@@ -721,6 +1166,7 @@ fi
 
 # ★ 起服前的占用体检：端口与卡都可能已被**别的实例**占着。
 #   不先查就起，会撞出难懂的运行期错误，故在此给出明确状态码。
+
 _OTHER=""
 for _n in $($DOCKER ps --format '{{.Names}}' --filter "name=$PFX" 2>/dev/null); do
   [ "$_n" = "${OVR_NAME:-$(cfg_names "$CFGNAME")}" ] && continue    # 自己（幂等重拉）不算占用
@@ -746,9 +1192,16 @@ if [ -n "${OVR_NAME:-}" ]; then
 else
   _PRECLEAN="$(cfg_names "$CFGNAME") $(cfg_legacy "$CFGNAME")"
 fi
+# ★ 收紧（修 #6）：预清**只删经归属证明的容器**，不得按名字盲删。
+#   原实现按名字一律 rm -f，会删掉恰好同名、但不属于本包的容器——
+#   这与 R26 情形 5「未知占用失败关闭、不自动清理」直接冲突。
 for n in $_PRECLEAN; do
   if $DOCKER inspect "$n" >/dev/null 2>&1; then
-    $DOCKER rm -f "$n" >/dev/null 2>&1 && echo "  预清旧实例: $n"
+    if [ "${CONTRACT_LOADED:-0}" = 1 ] && ! ct_owned_proof "$n"; then
+      die_st $ST_AMBIGUOUS AMBIGUOUS "同名容器 $n 归属无法证明，拒绝预清，需人工干预（R26 情形 5 / R32）" \
+        "HOLDER=$n" "REASON=preclean_unknown_ownership" "DETAIL=${CT_OWN_WHY:-unknown}"
+    fi
+    $DOCKER rm -f "$n" >/dev/null 2>&1 && echo "  预清旧实例（归属已证明）: $n"
   fi
 done
 if [ "$NUM" = 02 ]; then

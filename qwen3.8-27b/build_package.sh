@@ -21,9 +21,13 @@ SOURCE_REPO="${SOURCE_REPO:-$(basename "$(git -C "$HERE" rev-parse --show-toplev
 SOURCE_COMMIT="${SOURCE_COMMIT:-$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo n/a)}"
 SOURCE_EPOCH="${SOURCE_EPOCH:-$(git -C "$HERE" log -1 --format=%ct 2>/dev/null || echo 0)}"
 # 版本 = <YYYYMMDD>-g<Git短哈希>（同日多构建可区分；commit 未知时退化为纯日期）
-if [ "$SOURCE_COMMIT" != n/a ]; then VER="$TS-g${SOURCE_COMMIT:0:7}"; else VER="$TS"; fi
+if [ "$SOURCE_COMMIT" != n/a ]; then VER_BASE="$TS-g${SOURCE_COMMIT:0:7}"; else VER_BASE="$TS"; fi
+# ★ 脏工作树可唯一标识（2026-09-22 修）：仅用 HEAD 时，改过源码却未提交的包会与
+#   干净树产物**同版本不同内容**，而归属标签又以版本互证 ⇒ 会把不同包误认为同包。
+#   故追加 -d<12hex>：由**实际进入该线包的**源码/文档/资产内容确定性计算（见 build_one）。
+#   它不是伪造 commit —— commit 仍是真实 HEAD，摘要只补充「这次打进去的内容」。
 
-COMMON_CORE="launch.sh ensure_ready.sh fetch_hf_model.sh machine_prep.sh numa_bind.sh preflight_acs.sh"
+COMMON_CORE="contract.sh lifecycle.sh launch.sh ensure_ready.sh fetch_hf_model.sh machine_prep.sh numa_bind.sh preflight_acs.sh"
 
 build_one(){
   local NN="$1"
@@ -37,7 +41,7 @@ build_one(){
   # 骨架
   install -m0755 "$S/up.sh" "$ROOT/up.sh"
   echo "$CFG" > "$ROOT/.primary"
-  echo "q38-kit-$NN $VER" > "$ROOT/VERSION"
+  echo "q38-kit-$NN PLACEHOLDER" > "$ROOT/VERSION"
   for f in $COMMON_CORE; do cp "$S/common/$f" "$ROOT/common/"; done
   cp -r "$S/lib/." "$ROOT/lib/"
   cp "$P/rccl-acs-topo/acs_clear_all.sh" "$P/rccl-acs-topo/acs-clear.service" "$ROOT/patches/"
@@ -110,6 +114,23 @@ bash up.sh stop         # 停止（S9 清场）
 配置详情（卡数/引擎/镜像URL/实测数据/硬性前提）见 [\`$CFG/README.md\`]($CFG/README.md)。
 十步契约方法论见 \`docs/方案脚本规范-设计文档.md\`。升级：新包覆盖解包（勿 rm -rf，保留 triton 缓存目录）。
 EOF
+
+  # ── 剔除字节码缓存（2026-09-22 包闭合性测试查实）───────────────
+  #   cp -r 会把开发机上的 __pycache__/*.pyc 一并打进包。.pyc 的 co_filename
+  #   里写死**编译时的绝对路径**（/path/to/source/...），
+  #   既把作者机目录随包外发，又会让现场报错栈指向不存在的路径；
+  #   且它是可由 .py 重新生成的派生物，不该参与内容摘要。
+  find "$ROOT" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+  find "$ROOT" -name '*.pyc' -delete 2>/dev/null || true
+
+  # ── 内容摘要 → 最终版本（修 #9）────────────────────────────────
+  #   对除 VERSION/MANIFEST.json 之外的全部包内文件，按相对路径排序后
+  #   串联 "路径:sha256"，取 sha256 前 12 位。确定性：同内容必同摘要。
+  local DIGEST
+  DIGEST=$( cd "$ROOT" && find . -type f ! -name VERSION ! -name MANIFEST.json -print0 \
+            | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12 )
+  VER="${VER_BASE}-d${DIGEST}"
+  echo "q38-kit-$NN $VER" > "$ROOT/VERSION"
 
   # ── 通用机器可读清单 MANIFEST.json（消费方中立；自身不入 files；除自身外全量列举）──
   ROOT="$ROOT" NN="$NN" CFG="$CFG" VER="$VER" \

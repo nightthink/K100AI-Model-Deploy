@@ -54,19 +54,43 @@ echo "  实例=$NAME 端口=$PORT 卡组=${GPUS:-未声明} 期望卡数=$EXPECT
 if [ "${SKIP_GATE:-0}" = "1" ]; then _say "S3 已跳过（SKIP_GATE=1，数据不可用于结论）"
 else stage3_gate "$GPUS" "$EXPECT_GPU" "${REQ[@]}" || exit 1; fi
 
-stage5_cleanup "$NAME" || exit 1
+# ── S5 残留清理 ──────────────────────────────────────────────
+# ★ 新合同路径（LAUNCH_ID 非空 = 由 up.sh 的后台 Worker 拉起）**不调用** stage5_cleanup。
+#   stage5_cleanup 是按**实例名**清理的旧逻辑，无法证明该名字下的容器属于本次 launch；
+#   同名但归属不明的容器会被它直接删掉，与 R26 情形 5「未知占用失败关闭、不自动清理」冲突。
+#   新合同下，残留的发现与清理已由 up.sh 的同步判定（contract_resolve）与安全预清承担，
+#   二者都要求「publisher/package_id/line/launch_id 与快照互证」后才动手。
+#   LAUNCH_ID 为空的旧路径（其它线、直接调 common/launch.sh）保持原行为不变。
+if [ -n "${LAUNCH_ID:-}" ]; then
+  _say "S5 跳过（新合同路径 launch_id=$LAUNCH_ID：残留清理由 up.sh 归属互证后处理，不按名字盲清）"
+else
+  stage5_cleanup "$NAME" || exit 1
+fi
 
 _say "S4+S6 拉起：$CFG/serve.sh"
 bash "$SERVE" || { _say "✗ 启动命令返回非零"; exit 1; }
 
 stage7_wait_ready "$NAME" "http://127.0.0.1:$PORT/v1/models" \
                   "${READY_TIMEOUT:-3900}" "${MAX_RESTARTS:-2}" \
-  || { _say "S9 失败收尾"; stage9_teardown "$NAME"; exit 1; }
+  || { _say "S9 失败收尾";
+       # ★ KEEP_ON_FAIL=1 时保留容器，供抓取容器日志里的完整栈。
+       #   动机（2026-09-20）：HRRN 回输后请求返 500，但容器被 S9 清掉，
+       #   up.sh 日志只有 48 行摘要（过滤后仅剩 "Traceback" 一行），
+       #   真实栈在容器日志里，删了就永久取不回——排障时必须能留。
+       if [ "${KEEP_ON_FAIL:-0}" = "1" ]; then
+         _say "  KEEP_ON_FAIL=1：保留容器 $NAME 供排障（记得手工清理）"
+       else stage9_teardown "$NAME"; fi
+       exit 1; }
 
 if ! stage8_attest "$NAME" "${ATTEST[@]}"; then
   _say "★ S8 未通过 —— 服务起来了，但跑的不是声明的配置。"
   _say "  此时测出的数据**不可用于结论**（LD_PRELOAD 失败是静默的）。"
-  [ "${IGNORE_ATTEST:-0}" = "1" ] || { stage9_teardown "$NAME"; exit 2; }
+  if [ "${IGNORE_ATTEST:-0}" != "1" ]; then
+    if [ "${KEEP_ON_FAIL:-0}" = "1" ]; then
+      _say "  KEEP_ON_FAIL=1：保留容器 $NAME 供排障（记得手工清理）"
+    else stage9_teardown "$NAME"; fi
+    exit 2
+  fi
   _say "  IGNORE_ATTEST=1，继续。"
 fi
 

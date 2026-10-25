@@ -15,10 +15,10 @@
 
 其他模型的拉起包就绪后陆续发布。
 
-**性能数字怎么来的**：本仓所有线共用一套基准 harness → [`bench/`](bench/)。
-它复刻 opencode 的真实请求形态（系统提示 + 10 个工具 + 多轮工具循环），
-用按 seed 现生成的代码语料，按 vLLM `bench serve` 口径记录 TTFT/ITL/TPOT/E2EL 分位数。
-同一 seed + 同一线档案下，不同模型、不同配置线的数可直接横向比。
+**标准性能测试**：唯一量具为 [`bench/standard_load.py`](bench/standard_load.py)，
+输入45K–350K token、输出500–4K token，输入缓存命中率目标为均值95%、最小85%。
+报告按实际输入深度与输出规模给出TTFT、prefill、decode、E2E矩阵；自证未达标时数字不作数。
+详见 [`bench/标准性能测试.md`](bench/标准性能测试.md)。历史数字须按其原场景阅读，不能仅凭同一seed直接横向比较。
 
 > **线号按模型分段，不会撞号**：Qwen3.8-27B 用 **01–14**，DeepSeek-V4-Flash 用 **101/102**。
 > DSv4 原本也从 01 起编，2026-09-12 起改为三位——旧包 `dsv4-kit-01/02` 已弃用（其文件名在新编号下
@@ -61,10 +61,14 @@
 ```bash
 # 直接取 Releases 里的现成包（或仓库侧 cd qwen3.8-27b && bash build_package.sh 13）
 tar xzf q38-kit-13-*.tar.gz && cd q38-kit-13
-bash up.sh          # 体检 → 机器准备 → 镜像/权重自动获取 → 起服 → 真实请求冒烟
-bash up.sh status   # 观察 S1-S10 进展与实例状态
-bash up.sh stop     # 完整撤场（按标记前缀精确识别本包资产）
+bash up.sh start    # 01/13：快速触发后台生命周期，不等待就绪
+bash up.sh state    # 无副作用查询；STARTING(20)继续观察，READY(0)才是就绪
+bash up.sh stop     # 按本包归属证明定点停止，不清理未知资源
 ```
+
+上述用法适用于01／13，其余线按各自README使用；详情见
+[`拉起包使用说明`](qwen3.8-27b/docs/拉起包-使用说明.md)。`start`返回`STARTING`不是失败，也不等于已就绪。
+Release包对应各自标签版本，不会随`main`自动更新；需要当前源码版本时，请在`qwen3.8-27b/`运行打包器。
 
 硬性前提只有两个：DCU 驱动已装载（/dev/kfd、/opt/hyhal）；网络可达
 harbor.sourcefind.cn:5443 与 hf-mirror.com/ModelScope（不可达走各线 README 的离线兜底）。

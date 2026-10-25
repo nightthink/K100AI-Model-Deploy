@@ -228,7 +228,20 @@ else
 fi
 
 echo "13-bf16 TP8 全P2P $NAME: GPU=$GPUS PORT=$PORT mem=$MEM_FRAC (开AR + 全P2P)"
+# ★ 归属标签（R26.1）：归属必须由标签与包状态互证，不得仅凭名称前缀。
+#   line/pkg/launch_id 三者齐全且与本包一致，才算「可证明属于本包本线」；
+#   缺任一项即按「未知占用」失败关闭（R26 情形 5 / R32），绝不自动清理。
+_PKGV="$(awk '{print $2}' "$CFGDIR/../VERSION" 2>/dev/null)"
 $DOCKER run -d --name "$NAME" \
+  --label line=13 \
+  --label pkg="${_PKGV:-unknown}" \
+  --label launch_id="${LAUNCH_ID:-$(date +%s)-$$}" \
+  --label launch_mode=docker \
+  --label model_id="$(printf '%s' "$(realpath -m "$M" 2>/dev/null || echo "$M")" | sha256sum | cut -c1-16)" \
+  --label package_id="${_PKGV:-unknown}" \
+  --label publisher=01ma \
+  --label gpus="${GPUS:-}" \
+  --label port="${PORT:-}" \
   --network host --ipc host --privileged --shm-size 128g \
   --device=/dev/kfd --device=/dev/dri --device=/dev/mkfd \
   --group-add video --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
@@ -249,6 +262,8 @@ $DOCKER run -d --name "$NAME" \
   -e NCCL_P2P_LEVEL=SYS -e NCCL_ALGO=Ring -e NCCL_DEBUG=WARN \
   -e SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE=0 \
   -e PYTHONPATH=/minichain4 \
+  -e SGLANG_EXTRA_ARGS="${SGLANG_EXTRA_ARGS:-}" \
+  -e SGLANG_BACKPORT_RADIX="${SGLANG_BACKPORT_RADIX:-1}" \
   --entrypoint bash \
   harbor.sourcefind.cn:5443/dcu/admin/base/custom:sglang0.5.12-K100AI-qwen3.8-0828 -c "
   export PYTHONPATH=/minichain4
@@ -267,6 +282,6 @@ $DOCKER run -d --name "$NAME" \
     --speculative-eagle-topk 1 --speculative-num-draft-tokens 3 \
     --watchdog-timeout 7200 --dist-timeout 7200 --skip-server-warmup \
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder \
-    --host 0.0.0.0 --port $PORT" >/dev/null
+    --host 0.0.0.0 --port $PORT $SGLANG_EXTRA_ARGS" >/dev/null
 
 echo "$NAME started on $PORT（就绪看 /v1/models；TP8 首次就绪约 7 分钟）"

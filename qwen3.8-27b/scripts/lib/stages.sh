@@ -40,6 +40,10 @@ stage3_gate(){
   local rootven; rootven=$(cat /sys/devices/pci0000:00/0000:00:00.0/vendor 2>/dev/null)
   local subject=0
   [ "$kflavor" = "通用版 Ubuntu" ] && [ "$rootven" != "0x8086" ] && subject=1
+  # 与四卡 serve.sh 的同 socket 合同一致；v4 只解决跨 socket P2P。
+  case "${gpus// /}" in
+    0,1,2,3|4,5,6,7) subject=0;;
+  esac
   if [ "$subject" = 1 ]; then
     _say "  · 内核=$kflavor（$(uname -r)）根桥 vendor=$rootven ⇒ 受 PCI P2P 白名单影响"
     # 运行时实效：动态取符号地址（每次开机都变，绝不可写死）再读内存字节
@@ -59,7 +63,7 @@ stage3_gate(){
       _say "  ⚠ 取不到 gpu_dma_buf_attach 符号或缺 bpftrace，跳过运行时项"
     fi
   else
-    _say "  ✓ 内核=$kflavor 根桥=$rootven ⇒ 不受 PCI P2P 白名单影响，无需 v4"
+    _say "  ✓ 卡组=$gpus 内核=$kflavor 根桥=$rootven ⇒ 当前调用不需要跨 socket v4 补丁"
   fi
 
   # -- 硬件耦合：海光 hycu 绑定 --
