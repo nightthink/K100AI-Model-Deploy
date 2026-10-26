@@ -63,18 +63,18 @@ PFX="01ma.cli-model-svc-"          # ★ 本流程所有运行时产物的识别
 #   在无 GPU 机器上直接 source 验证。本处只负责加载与调用，不复制其逻辑。
 #   ★ 不提供任何「跳过驱动/设备检查」的开关——模块可测是因为它本身不依赖那些前提。
 CONTRACT_LOADED=0
-# 新四动作只属于 01/13 的一线一包；共用骨架不能改变其它线的旧入口。
+# 四动作用于 01/13 及要求 Worker 身份的 17/18/19；其余线保留旧入口。
 _contract_line=$(cut -c1-2 "$HERE/.primary" 2>/dev/null || true)
-if [[ "$_contract_line" = 01 || "$_contract_line" = 13 ]] && [ -f "$HERE/common/contract.sh" ]; then
+if [[ "$_contract_line" = 01 || "$_contract_line" = 13 || "$_contract_line" = 17 || "$_contract_line" = 18 || "$_contract_line" = 19 ]] && [ -f "$HERE/common/contract.sh" ]; then
   . "$HERE/common/contract.sh"
   [ -f "$HERE/common/lifecycle.sh" ] && . "$HERE/common/lifecycle.sh"
   CONTRACT_LOADED=1
 fi
-LAUNCH_MODE="docker"              # R25.4-R25.6：只表达执行机制，01/13 均为 docker
+LAUNCH_MODE="docker"              # R25.4-R25.6：只表达执行机制，这些配置均为 docker
 
 # ★ 真实宿主模型路径（R25.1）——必须是宿主 realpath，不得用 MODELS_ROOT 根，
 #   也不得用容器内 /models/target 冒充（那是挂载点，不是身份）。
-#   01/13 线的 serve.sh 均以 `M="$MODELS_ROOT/Qwen3.8-27B-1M"` 定义，从中解析。
+#   从 serve.sh 的 M="$MODELS_ROOT/<模型子目录>" 解析，保留17线原模型与1M农场的区别。
 ct_line_model(){
   local sv="$HERE/$CFGNAME/serve.sh" mr sub
   [ -f "$sv" ] || { echo ""; return 1; }
